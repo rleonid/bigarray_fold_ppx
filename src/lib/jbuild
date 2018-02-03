@@ -1,0 +1,8 @@
+(jbuild_version 1)
+
+(library (
+  (name bigarray_fold_ppx)
+  (public_name bigarray_fold_ppx)
+  (libraries (ocaml-migrate-parsetree))
+  (kind ppx_rewriter)
+  ))

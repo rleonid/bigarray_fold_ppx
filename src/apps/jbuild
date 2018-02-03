@@ -1,0 +1,12 @@
+(jbuild_version 1)
+
+(executables (
+  (names (prof test))
+  (libraries (bau core_bench))
+  (preprocess (pps (bigarray_fold_ppx)))
+  ))
+
+(alias
+  ((name apps)
+   (deps (prof.exe test.exe))
+   ))
