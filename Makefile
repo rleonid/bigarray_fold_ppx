@@ -15,7 +15,7 @@
 default: build
 
 build:
-	jbuilder build @install
+	jbuilder build
 
 clean:
 	jbuilder clean

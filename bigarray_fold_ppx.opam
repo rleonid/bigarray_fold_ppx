@@ -1,4 +1,4 @@
-opam-version: "1.2"
+opam-version: "2.0"
 maintainer: "Leonid Rozenberg <leonidr@gmail.com>"
 authors: "Leonid Rozenberg <leonidr@gmail.com>"
 homepage: "https://github.com/rleonid/bigarray_fold_ppx/"
@@ -6,14 +6,14 @@ dev-repo: "git+https://github.com/rleonid/bigarray_fold_ppx.git"
 bug-reports: "https://github.com/rleonid/bigarray_fold_ppx/issues"
 license: "Apache2"
 
-available: [ ocaml-version >= "4.04" ]
-
 build: [
   [ "jbuilder" "subst"] {pinned}
   [ "jbuilder" "build" "-p" name "-j" jobs "@install"]
 ]
 
 depends: [
-#  "ocaml"               { >= "4.04" }
+  "ocaml"                   { >= "4.04" }
+  "jbuilder"                { build & >= "1.0+beta16" }
+  "ocaml-migrate-parsetree" { >= "1.0.7" }
 ]
 

@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/rleonid/bigarray_fold_ppx.svg?branch=master)](https://travis-ci.org/rleonid/bigarray_fold_ppx)
+
 BigArray Fold PPX
 =================
 
