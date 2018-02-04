@@ -1,12 +1,6 @@
 open Bau
 open BigarrayExt
-
-let generate kind n =
-  let gen  = Generators.random kind in
-  let native = Array.init n (fun _ -> gen ()) in
-  let f = Array1.of_array kind Fortran_layout native in
-  let c = Array1.of_array kind C_layout native in
-  native, f, c
+open Common
 
 let sum_n (v : float array) = Array.fold_left (+.) 0. v
 let sum_b v = [%array1.float64 fold_left (+.) 0. v]
