@@ -1,7 +1,7 @@
 BigArray Fold PPX
-------------------
+=================
 
-### Motivation
+## Motivation
 
 The `OCaml` compiler has built in primitives (see `caml_ba_ref_` in
 `bigarray.mli`) that can be used to index into a Bigarray faster if the full
@@ -43,14 +43,14 @@ an `(float, float64, fortran_layout) Array1.t` :
 Typical performance results look like:
 
   ```bash
-  $ ./fold_ppx_prof.native
-  10000 samples of 40
-  native                        :0.001807
-  regular fold                  :0.005426
-  created fold_ppx              :0.001455
+  $ prof.exe
+  10000 samples of arrays of length 40
+  native                        : 0.018666 sec
+  regular fold as for loop      : 0.009421 sec
+  created fold_ppx              : 0.001143 sec
   ```
 
-### Usage
+## Usage
 
 The general syntax is
 
@@ -60,32 +60,30 @@ The general syntax is
 
   - `bigarraytype` - Currently only supports `"array1"`
   - `kind` - One of:
-          `"float32"`,
-          `"float64"`,
-          `"complex32"`,
-          `"complex64"`,
-          `"int8_signed"`,
-          `"int8_unsigned"`,
-          `"int16_signed"`,
-          `"int16_unsigned"`,
-          `"int32"`,
-          `"int64"`,
-          `"int"`,
-          `"nativeint"`,
-          `"char"`.
-  - `layout` Optional but can be `"fortran"` or `"c"`. If left off `fold_ppx`
+          `float32`,
+          `float64`,
+          `complex32`,
+          `complex64`,
+          `int8_signed`,
+          `int8_unsigned`,
+          `int16_signed`,
+          `int16_unsigned`,
+          `int32`,
+          `int64`,
+          `int`,
+          `nativeint`,
+          or `char`.
+  - `layout` Optional but can be `fortran` or `c`. If left off `fold_ppx`
     will generate code that detects the layout and acts accordingly.
-  - `operation` - `"fold_left"`, `"fold_right"` or `"iter"`
-
-  Arguments:
+  - `operation` - `fold_left`, `fold_right` or `iter`
   - `f` the `fold` or `iter` function to apply. If `v` has type
-    `(k,'b, 'c) Array1.t` then `f` should have types:
+    `(k, 'b, 'c) Array1.t` then `f` should have types:
       - `fold_left`  : `('a -> k -> 'a)`
       - `fold_right` : `(k -> 'a -> 'a)` 
       - `iter`       : `(k -> unit)`
 
-    Just like regular `Array` values. This can be applied with a label: `~f`
-    but then `~init` must be labeled as well (for fold only).
+    Just like regular `Array` values. These can be applied with a label: `~f`
+    but then `~init` must be labeled as well.
 
   - `init` the initial value, only for folds
   - `v` the `Array1`
