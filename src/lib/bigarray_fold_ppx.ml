@@ -121,6 +121,10 @@ let get_array1 ~o arr index_ex =
   Exp.apply (ex_id (opened ~o "unsafe_get"))
     [(Nolabel, (ex_id arr)); (Nolabel, index_ex)]
 
+let set_array1 ~o arr index_ex new_value_ex =
+  Exp.apply (ex_id (opened ~o "unsafe_set"))
+    [(Nolabel, (ex_id arr)); (Nolabel, index_ex); (Nolabel, new_value_ex)]
+
 let apply_f fold_f args =
   Exp.apply fold_f (List.map (fun e -> Nolabel,e) args)
 
@@ -155,6 +159,11 @@ type operation =
             ; init  : e
             ; v     : e
             }  (* upto, f, init, v*)
+  | Mutate of { o : bool
+              ; i : bool
+              ; f : e
+              ; v : e
+              }
 
 let fold_apply_f ~o ~i ~upto fun_exp ~ref ~arr ~index =
   let index_ex = ex_id index in
@@ -192,6 +201,21 @@ let iter_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
      else
        apply_f fun_exp [get_array1 ~o vec_arg index_ex])
 
+let mutate_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
+  let index_c = "i" in
+  let index_ex = ex_id index_c in
+  let new_value_exp =
+    if i then
+       apply_f fun_exp [index_ex; get_array1 ~o vec_arg index_ex]
+     else
+       apply_f fun_exp [get_array1 ~o vec_arg index_ex]
+  in
+  make_for_loop index_c
+    (Exp.constant (const_int start))
+    (length_expr ~o ~minus_one vec_arg)
+    upto
+    (set_array1 ~o vec_arg index_ex new_value_exp)
+
 let operation_to_name = function
   | Iter { i = false }                -> "iter"
   | Iter { i = true }                 -> "iteri"
@@ -199,16 +223,18 @@ let operation_to_name = function
   | Fold { i = true ; left = true}    -> "foldi_left"
   | Fold { i = false ; left = false}  -> "fold_right"
   | Fold { i = true ; left = false}   -> "foldi_right"
+  | Mutate { i = false }              -> "mutate"
+  | Mutate { i = true }               -> "mutatei"
 
 let array_value = function
   | Iter { v } -> v
   | Fold { v } -> v
+  | Mutate { v } -> v
 
 let operation_to_body = function
-  | Iter { o; i; f; v }       ->
-      iter_body ~o ~i ~upto:true f
-  | Fold { o; i; left; f; init; v } ->
-      fold_body ~o ~i ~upto:left f init
+  | Iter { o; i; f; v }             -> iter_body ~o ~i ~upto:true f
+  | Fold { o; i; left; f; init; v } -> fold_body ~o ~i ~upto:left f init
+  | Mutate { o; i; f; v }           -> mutate_body ~o ~i ~upto:true f
 
 (* Create a fast iter/fold using a reference and for-loop. *)
 let create_layout_specific ~o op kind layout =
@@ -271,28 +297,36 @@ let parse_fold_args loc ~o ~i left lst =
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
         end
 
-let parse_iter_args loc ~o ~i lst =
+let parse_iter_or_mutate_args loc lst funs k =
   match List.assoc (Labelled "f") lst with
   | f ->
       begin match List.assoc Nolabel lst with
-      | v -> Iter {o; i; f; v}
+      | v -> k f v
       | exception Not_found ->
-          location_error ~loc "Missing unlabeled array1 argument to iter."
+          location_error ~loc "Missing unlabeled array1 argument to %s." funs
       end
   | exception Not_found  ->
       let n = List.length lst in
       if n < 2 then
-        location_error ~loc "Missing iter arguments"
+        location_error ~loc "Missing %s arguments" funs
       else if n > 2 then
-        location_error ~loc "Too many argument to iter"
+        location_error ~loc "Too many argument to %s" funs
       else
         begin match lst with
         | [ (Nolabel, f)
           ; (Nolabel, v)
-          ] -> Iter {o; i; f; v}
+          ] -> k f v
         | _ ->
-          location_error ~loc "Missing unlabeled \"f\" argument to iter."
+          location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
         end
+
+let parse_iter_args loc ~o ~i lst =
+  parse_iter_or_mutate_args loc lst "iter"
+    (fun f v -> Iter {o; i; f; v})
+
+let parse_mutate_args loc ~o ~i lst =
+  parse_iter_or_mutate_args loc lst "mutate"
+    (fun f v -> Mutate {o; i; f; v})
 
 let parse_payload ~loc ~o = function
   | [{pstr_desc =
@@ -301,13 +335,15 @@ let parse_payload ~loc ~o = function
               Pexp_apply ({pexp_desc =
                 Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
       begin match f with
-        | "fold_left"   -> parse_fold_args loc ~o ~i:false true args
-        | "fold_right"  -> parse_fold_args loc ~o ~i:false false args
-        | "foldi_left"  -> parse_fold_args loc ~o ~i:true true args
-        | "foldi_right" -> parse_fold_args loc ~o ~i:true false args
-        | "iter"        -> parse_iter_args loc ~o ~i:false args
-        | "iteri"       -> parse_iter_args loc ~o ~i:true args
-        | operation     -> location_error ~loc "Unrecognized command: %s" operation
+      | "fold_left"   -> parse_fold_args loc ~o ~i:false true args
+      | "fold_right"  -> parse_fold_args loc ~o ~i:false false args
+      | "foldi_left"  -> parse_fold_args loc ~o ~i:true true args
+      | "foldi_right" -> parse_fold_args loc ~o ~i:true false args
+      | "iter"        -> parse_iter_args loc ~o ~i:false args
+      | "iteri"       -> parse_iter_args loc ~o ~i:true args
+      | "mutate"      -> parse_mutate_args loc ~o ~i:false args
+      | "mutatei"     -> parse_mutate_args loc ~o ~i:true args
+      | operation     -> location_error ~loc "Unrecognized command: %s" operation
       end
   | [] -> location_error ~loc "Missing fold_left, fold_right or iter invocation."
   | _  -> location_error ~loc "Incorrect fold_left, fold_right or iter invocation."
