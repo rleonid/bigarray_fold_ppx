@@ -104,29 +104,32 @@ let make_let ?layout ?(arg="a") ~o kind fold_var exp1 app =
   in
   Exp.let_ Nonrecursive [ Vb.mk (Pat.var (to_str fold_var)) body] app
 
+let unlabeled lst =
+  List.map (fun ex -> Nolabel, ex) lst
+
 let make_ref var init exp =
   Exp.let_ Nonrecursive
     [ Vb.mk (Pat.var (to_str var))
-        (Exp.apply (ex_id "ref") [Nolabel, init])]
+        (Exp.apply (ex_id "ref") (unlabeled [init]))]
     exp
 
 let lookup_ref var =
-  Exp.apply (ex_id "!") [Nolabel, (ex_id var)]
+  Exp.apply (ex_id "!") (unlabeled [ex_id var])
 
 (* This is an operator! *)
 let assign_ref var val_exp =
-  Exp.apply (ex_id ":=") [(Nolabel, (ex_id var)); (Nolabel, val_exp)]
+  Exp.apply (ex_id ":=") (unlabeled [ex_id var; val_exp])
 
 let get_array1 ~o arr index_ex =
   Exp.apply (ex_id (opened ~o "unsafe_get"))
-    [(Nolabel, (ex_id arr)); (Nolabel, index_ex)]
+    (unlabeled [ex_id arr; index_ex])
 
 let set_array1 ~o arr index_ex new_value_ex =
   Exp.apply (ex_id (opened ~o "unsafe_set"))
-    [(Nolabel, (ex_id arr)); (Nolabel, index_ex); (Nolabel, new_value_ex)]
+    (unlabeled [ex_id arr; index_ex; new_value_ex])
 
 let apply_f fold_f args =
-  Exp.apply fold_f (List.map (fun e -> Nolabel,e) args)
+  Exp.apply fold_f (unlabeled args)
 
 let make_for_loop index start_exp end_exp upto body_exp =
   if upto
@@ -139,10 +142,12 @@ let length_expr ~o ~minus_one arr =
   let edim = ex_id (opened ~o "dim") in
   if minus_one then
     Exp.apply (ex_id "-")
-      [ Nolabel, (Exp.apply edim  [Nolabel,(ex_id arr)])
-      ; Nolabel, (Exp.constant (const_int 1))]
+      (unlabeled
+        [ Exp.apply edim (unlabeled [ex_id arr])
+        ; Exp.constant (const_int 1)
+        ])
   else
-    Exp.apply edim [Nolabel, (ex_id arr)]
+    Exp.apply edim (unlabeled [ex_id arr])
 
 type e = Parsetree.expression
 
@@ -177,6 +182,12 @@ let fold_apply_f ~o ~i ~upto fun_exp ~ref ~arr ~index =
       apply_f fun_exp [ lookup_ref ref; get_array1 ~o arr index_ex]
     else
       apply_f fun_exp [ get_array1 ~o arr index_ex; lookup_ref ref]
+
+(* TODO:
+ * Generalize the variable naming mechanism, such that if a user passes an
+ * initialial value as 'r' or an function as 'i' (for example), this will
+ * still compile.
+ * *)
 
 let fold_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp init =
   (make_ref "r" init
@@ -243,7 +254,8 @@ let create_layout_specific ~o op kind layout =
   let name = operation_to_name op in
   let body = operation_to_body op in
   let v = array_value op in
-  make_let ~layout ~o kind name (body ~start ~minus_one) (Exp.apply (ex_id name) [Nolabel, v])
+  make_let ~layout ~o kind name (body ~start ~minus_one)
+    (Exp.apply (ex_id name) (unlabeled [v]))
 
 (* Create a layout agnostic fold/iter function. *)
 let create ~o op kind =
@@ -289,9 +301,9 @@ let parse_fold_args loc ~o ~i left lst =
         location_error ~loc "Too many arguments to %s." (to_fs left)
       else
         begin match lst with
-        | [ (Nolabel, f)
-          ; (Nolabel, init)
-          ; (Nolabel, v)
+        | [ Nolabel, f
+          ; Nolabel, init
+          ; Nolabel, v
           ] -> Fold { o; i; left; f; init; v}
         | _ ->
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
@@ -313,8 +325,8 @@ let parse_iter_or_modify_args loc lst funs k =
         location_error ~loc "Too many argument to %s" funs
       else
         begin match lst with
-        | [ (Nolabel, f)
-          ; (Nolabel, v)
+        | [ Nolabel, f
+          ; Nolabel, v
           ] -> k f v
         | _ ->
           location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
