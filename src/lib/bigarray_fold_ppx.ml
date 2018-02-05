@@ -269,11 +269,11 @@ let fold_to_name i init left =
     (if left then "left" else "right")
 
 let operation_to_name = function
-  | Iter { i = false }                -> "iter"
-  | Iter { i = true }                 -> "iteri"
-  | Fold { i; init; left }            -> fold_to_name i init left
-  | Modify { i = false }              -> "modify"
-  | Modify { i = true }               -> "modifyi"
+  | Iter { i = false }     -> "iter"
+  | Iter { i = true }      -> "iteri"
+  | Fold { i; init; left } -> fold_to_name i init left
+  | Modify { i = false }   -> "modify"
+  | Modify { i = true }    -> "modifyi"
 
 let array_value = function
   | Iter { v } -> v
@@ -308,12 +308,12 @@ let create ~o op kind =
       (* intended variable masking *)
       (let layout, start, minus_one = to_fold_params (L C_layout) in
       make_let ~layout ~o kind name_c (body ~start ~minus_one)
-        (Exp.match_ (Exp.apply (ex_id (opened ~o "layout")) [Nolabel, (ex_id "b")])
+        (Exp.match_ (Exp.apply (ex_id (opened ~o "layout")) [ Nolabel, (ex_id "b")])
           [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-              (Exp.apply (ex_id name_f) [Nolabel, (ex_id "b")])
+              (Exp.apply (ex_id name_f) [ Nolabel, (ex_id "b")])
           ; Exp.case (Pat.construct (lid "C_layout") None)
-              (Exp.apply (ex_id name_c) [Nolabel, (ex_id "b")])])))
-    (Exp.apply (ex_id name) [Nolabel, v])
+              (Exp.apply (ex_id name_c) [ Nolabel, (ex_id "b")])])))
+    (Exp.apply (ex_id name) [ Nolabel, v])
 
 let to_fs = function | true -> "fold_left" | false -> "fold_right"
 
@@ -383,10 +383,10 @@ let parse_reduce_args loc ~o ~i left lst =
     (fun f v -> Fold {o; i; f; v; left; init = None})
 
 let parse_payload ~loc ~o = function
-  | [{pstr_desc =
+  | [ { pstr_desc =
         Pstr_eval
-          ({pexp_desc =
-              Pexp_apply ({pexp_desc =
+          ( { pexp_desc =
+              Pexp_apply ( { pexp_desc =
                 Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
       begin match f with
       | "fold_left"     -> parse_fold_args loc ~o ~i:false true args
@@ -424,10 +424,10 @@ let parse ?layout loc ~o ~kind payload =
 
 let transform loc txt payload def =
   match split '.' txt with
-  | ["array1"; kind]          -> parse loc ~o:false ~kind payload
-  | ["array1"; kind; layout]  -> parse ~layout loc ~o:false ~kind payload
-  | ["open1"; kind]           -> parse loc ~o:true ~kind payload
-  | ["open1"; kind; layout]   -> parse ~layout loc ~o:true ~kind payload
+  | [ "array1"; kind ]          -> parse loc ~o:false ~kind payload
+  | [ "array1"; kind; layout ]  -> parse ~layout loc ~o:false ~kind payload
+  | [ "open1"; kind ]           -> parse loc ~o:true ~kind payload
+  | [ "open1"; kind; layout ]   -> parse ~layout loc ~o:true ~kind payload
   | _ -> def ()
 
 let bigarray_fold_mapper =
