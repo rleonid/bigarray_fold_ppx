@@ -159,7 +159,7 @@ type operation =
             ; init  : e
             ; v     : e
             }  (* upto, f, init, v*)
-  | Mutate of { o : bool
+  | Modify of { o : bool
               ; i : bool
               ; f : e
               ; v : e
@@ -201,7 +201,7 @@ let iter_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
      else
        apply_f fun_exp [get_array1 ~o vec_arg index_ex])
 
-let mutate_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
+let modify_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
   let index_c = "i" in
   let index_ex = ex_id index_c in
   let new_value_exp =
@@ -223,18 +223,18 @@ let operation_to_name = function
   | Fold { i = true ; left = true}    -> "foldi_left"
   | Fold { i = false ; left = false}  -> "fold_right"
   | Fold { i = true ; left = false}   -> "foldi_right"
-  | Mutate { i = false }              -> "mutate"
-  | Mutate { i = true }               -> "mutatei"
+  | Modify { i = false }              -> "modify"
+  | Modify { i = true }               -> "modifyi"
 
 let array_value = function
   | Iter { v } -> v
   | Fold { v } -> v
-  | Mutate { v } -> v
+  | Modify { v } -> v
 
 let operation_to_body = function
   | Iter { o; i; f; v }             -> iter_body ~o ~i ~upto:true f
   | Fold { o; i; left; f; init; v } -> fold_body ~o ~i ~upto:left f init
-  | Mutate { o; i; f; v }           -> mutate_body ~o ~i ~upto:true f
+  | Modify { o; i; f; v }           -> modify_body ~o ~i ~upto:true f
 
 (* Create a fast iter/fold using a reference and for-loop. *)
 let create_layout_specific ~o op kind layout =
@@ -297,7 +297,7 @@ let parse_fold_args loc ~o ~i left lst =
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
         end
 
-let parse_iter_or_mutate_args loc lst funs k =
+let parse_iter_or_modify_args loc lst funs k =
   match List.assoc (Labelled "f") lst with
   | f ->
       begin match List.assoc Nolabel lst with
@@ -321,12 +321,12 @@ let parse_iter_or_mutate_args loc lst funs k =
         end
 
 let parse_iter_args loc ~o ~i lst =
-  parse_iter_or_mutate_args loc lst "iter"
+  parse_iter_or_modify_args loc lst "iter"
     (fun f v -> Iter {o; i; f; v})
 
-let parse_mutate_args loc ~o ~i lst =
-  parse_iter_or_mutate_args loc lst "mutate"
-    (fun f v -> Mutate {o; i; f; v})
+let parse_modify_args loc ~o ~i lst =
+  parse_iter_or_modify_args loc lst "modify"
+    (fun f v -> Modify {o; i; f; v})
 
 let parse_payload ~loc ~o = function
   | [{pstr_desc =
@@ -341,8 +341,8 @@ let parse_payload ~loc ~o = function
       | "foldi_right" -> parse_fold_args loc ~o ~i:true false args
       | "iter"        -> parse_iter_args loc ~o ~i:false args
       | "iteri"       -> parse_iter_args loc ~o ~i:true args
-      | "mutate"      -> parse_mutate_args loc ~o ~i:false args
-      | "mutatei"     -> parse_mutate_args loc ~o ~i:true args
+      | "modify"      -> parse_modify_args loc ~o ~i:false args
+      | "modifyi"     -> parse_modify_args loc ~o ~i:true args
       | operation     -> location_error ~loc "Unrecognized command: %s" operation
       end
   | [] -> location_error ~loc "Missing fold_left, fold_right or iter invocation."

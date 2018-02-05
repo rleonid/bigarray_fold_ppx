@@ -77,7 +77,8 @@ The general syntax is
           or `char`.
   - `layout` Optional but can be `fortran` or `c`. If left off `fold_ppx`
     will generate code that detects the layout and acts accordingly.
-  - `operation` - `fold_left`, `fold_right`, `foldi_left`, `foldi_right`, `iter` or `iteri`.
+  - `operation` - `fold_left`, `fold_right`, `foldi_left`, `foldi_right`,
+     `iter`,`iteri`, `modify` or `modifyi`.
   - `f` the `fold` or `iter` function to apply. If `v` has type
     `(k, 'b, 'c) Array1.t` then `f` should have types:
       - `fold_left`     : `('a -> k -> 'a)`
@@ -86,6 +87,8 @@ The general syntax is
       - `foldi_right`   : `(int -> k -> 'a -> 'a)`
       - `iter`          : `(k -> unit)`
       - `iteri`         : `(int -> k -> unit)`
+      - `modify`        : `(k -> k)`
+      - `modifyi`       : `(int -> k -> k)`
 
     Just like regular `Array` values. These can be applied with a label: `~f`
     but then `~init` must be labeled as well.
