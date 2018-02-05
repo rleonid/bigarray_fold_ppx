@@ -190,15 +190,20 @@ let fold_apply_f ~o ~i ~upto fun_exp ~ref ~arr ~index =
  * *)
 
 let fold_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp init =
-  (make_ref "r" init
-     (Exp.sequence
-        (make_for_loop "i"
-          (Exp.constant (const_int start))
-          (length_expr ~o ~minus_one vec_arg)
-          upto
-          (assign_ref "r"
-            (fold_apply_f ~o ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
-        (lookup_ref "r")))
+  make_ref "r" init
+    (Exp.sequence
+      (make_for_loop "i"
+        (Exp.constant (const_int start))
+        (length_expr ~o ~minus_one vec_arg)
+        upto
+        (assign_ref "r"
+          (fold_apply_f ~o ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
+      (lookup_ref "r"))
+
+let let_unit exp =
+  let unit_l = lid "()" in
+  Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
+    (Exp.construct unit_l None)
 
 let iter_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
   let index_c = "i" in
@@ -207,10 +212,11 @@ let iter_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
     (Exp.constant (const_int start))
     (length_expr ~o ~minus_one vec_arg)
     upto
-    (if i then
-       apply_f fun_exp [index_ex; get_array1 ~o vec_arg index_ex]
-     else
-       apply_f fun_exp [get_array1 ~o vec_arg index_ex])
+    (let_unit
+      (if i then
+        apply_f fun_exp [index_ex; get_array1 ~o vec_arg index_ex]
+      else
+        apply_f fun_exp [get_array1 ~o vec_arg index_ex]))
 
 let modify_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
   let index_c = "i" in
