@@ -131,39 +131,43 @@ let set_array1 ~o arr index_ex new_value_ex =
 let apply_f fold_f args =
   Exp.apply fold_f (unlabeled args)
 
-let make_for_loop index start_exp end_exp upto body_exp =
+let make_for_loop index ~start_exp ~end_exp upto body_exp =
   if upto
   then Exp.for_ (Pat.var (to_str index)) start_exp end_exp Upto body_exp
   else Exp.for_ (Pat.var (to_str index)) end_exp start_exp Downto body_exp
 
 let const_int n = Pconst_integer (string_of_int n, None)
 
-let length_expr ~o ~minus_one arr =
-  let edim = ex_id (opened ~o "dim") in
+let mo_exp ~minus_one exp =
   if minus_one then
     Exp.apply (ex_id "-")
-      (unlabeled
-        [ Exp.apply edim (unlabeled [ex_id arr])
-        ; Exp.constant (const_int 1)
-        ])
+      (unlabeled [ exp ; Exp.constant (const_int 1) ])
   else
-    Exp.apply edim (unlabeled [ex_id arr])
+    exp
+
+let length_expr ~o ~minus_one arr =
+  let edim = ex_id (opened ~o "dim") in
+  let arr_len_e = Exp.apply edim (unlabeled [ex_id arr]) in
+  mo_exp ~minus_one arr_len_e
 
 type e = Parsetree.expression
 
 type operation =
+  (* 'acc -> 'a -> 'acc *)
+  | Fold of { o     : bool
+            ; i     : bool
+            ; left  : bool
+            ; f     : e
+            ; init  : e option    (* None -> reduce *)
+            ; v     : e
+            }  (* upto, f, init, v*)
+  (* 'a -> unit *)
   | Iter of { o : bool    (* Inside Array1? *)
             ; i : bool    (* Add the index ?*)
             ; f : e
             ; v : e
             }
-  | Fold of { o     : bool
-            ; i     : bool
-            ; left  : bool
-            ; f     : e
-            ; init  : e
-            ; v     : e
-            }  (* upto, f, init, v*)
+  (* 'a -> 'b, value <- 'b *)
   | Modify of { o : bool
               ; i : bool
               ; f : e
@@ -190,15 +194,40 @@ let fold_apply_f ~o ~i ~upto fun_exp ~ref ~arr ~index =
  * *)
 
 let fold_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp init =
+  let start_exp = Exp.constant (const_int start) in
+  let end_exp = length_expr ~o ~minus_one vec_arg in
   make_ref "r" init
     (Exp.sequence
-      (make_for_loop "i"
-        (Exp.constant (const_int start))
-        (length_expr ~o ~minus_one vec_arg)
-        upto
+      (make_for_loop "i" ~start_exp ~end_exp upto
         (assign_ref "r"
           (fold_apply_f ~o ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
       (lookup_ref "r"))
+
+let reduce_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
+  let first_index, start_exp, end_exp, dir =
+    let li = length_expr ~o ~minus_one vec_arg in
+    let fi = Exp.constant (const_int start) in
+    if upto then
+      fi
+      , Exp.constant (const_int (start + 1))
+      , li
+      , Upto
+    else
+      li
+      , (mo_exp ~minus_one:true li)
+      , fi
+      , Downto
+  in
+  make_ref "r" (get_array1 ~o vec_arg first_index)
+    (Exp.sequence
+      (Exp.for_ (Pat.var (to_str "i")) start_exp end_exp dir
+        (assign_ref "r"
+          (fold_apply_f ~o ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
+      (lookup_ref "r"))
+
+let gen_fold_body ?vec_arg ~o ~i ~upto ~start ~minus_one fun_exp = function
+  | None      -> reduce_body ?vec_arg ~o ~i ~upto ~start ~minus_one fun_exp
+  | Some init -> fold_body ?vec_arg ~o ~i ~upto ~start ~minus_one fun_exp init
 
 let let_unit exp =
   let unit_l = lid "()" in
@@ -209,8 +238,8 @@ let iter_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
   let index_c = "i" in
   let index_ex = ex_id index_c in
   make_for_loop index_c
-    (Exp.constant (const_int start))
-    (length_expr ~o ~minus_one vec_arg)
+    ~start_exp:(Exp.constant (const_int start))
+    ~end_exp:(length_expr ~o ~minus_one vec_arg)
     upto
     (let_unit
       (if i then
@@ -228,18 +257,21 @@ let modify_body ?(vec_arg="a") ~o ~i ~upto ~start ~minus_one fun_exp =
        apply_f fun_exp [get_array1 ~o vec_arg index_ex]
   in
   make_for_loop index_c
-    (Exp.constant (const_int start))
-    (length_expr ~o ~minus_one vec_arg)
+    ~start_exp:(Exp.constant (const_int start))
+    ~end_exp:(length_expr ~o ~minus_one vec_arg)
     upto
     (set_array1 ~o vec_arg index_ex new_value_exp)
+
+let fold_to_name i init left =
+  sprintf "%s%s_%s"
+    (match init with | None -> "reduce" | Some _ -> "fold")
+    (if i then "i" else "")
+    (if left then "left" else "right")
 
 let operation_to_name = function
   | Iter { i = false }                -> "iter"
   | Iter { i = true }                 -> "iteri"
-  | Fold { i = false ; left = true}   -> "fold_left"
-  | Fold { i = true ; left = true}    -> "foldi_left"
-  | Fold { i = false ; left = false}  -> "fold_right"
-  | Fold { i = true ; left = false}   -> "foldi_right"
+  | Fold { i; init; left }            -> fold_to_name i init left
   | Modify { i = false }              -> "modify"
   | Modify { i = true }               -> "modifyi"
 
@@ -250,7 +282,7 @@ let array_value = function
 
 let operation_to_body = function
   | Iter { o; i; f; v }             -> iter_body ~o ~i ~upto:true f
-  | Fold { o; i; left; f; init; v } -> fold_body ~o ~i ~upto:left f init
+  | Fold { o; i; left; f; init; v } -> gen_fold_body ~o ~i ~upto:left f init
   | Modify { o; i; f; v }           -> modify_body ~o ~i ~upto:true f
 
 (* Create a fast iter/fold using a reference and for-loop. *)
@@ -291,7 +323,7 @@ let parse_fold_args loc ~o ~i left lst =
       begin match List.assoc (Labelled "init") lst with
       | init ->
           begin match List.assoc Nolabel lst with
-          | v -> Fold { o; i; left; f; init; v }
+          | v -> Fold { o; i; left; f; init = Some init; v }
           | exception Not_found ->
               location_error ~loc "Missing unlabeled array1 argument to %s."
                 (to_fs left)
@@ -310,12 +342,12 @@ let parse_fold_args loc ~o ~i left lst =
         | [ Nolabel, f
           ; Nolabel, init
           ; Nolabel, v
-          ] -> Fold { o; i; left; f; init; v}
+          ] -> Fold { o; i; left; f; init = Some init; v}
         | _ ->
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
         end
 
-let parse_iter_or_modify_args loc lst funs k =
+let parse_initless_args loc lst funs k =
   match List.assoc (Labelled "f") lst with
   | f ->
       begin match List.assoc Nolabel lst with
@@ -339,12 +371,16 @@ let parse_iter_or_modify_args loc lst funs k =
         end
 
 let parse_iter_args loc ~o ~i lst =
-  parse_iter_or_modify_args loc lst "iter"
+  parse_initless_args loc lst "iter"
     (fun f v -> Iter {o; i; f; v})
 
 let parse_modify_args loc ~o ~i lst =
-  parse_iter_or_modify_args loc lst "modify"
+  parse_initless_args loc lst "modify"
     (fun f v -> Modify {o; i; f; v})
+
+let parse_reduce_args loc ~o ~i left lst =
+  parse_initless_args loc lst "reduce"
+    (fun f v -> Fold {o; i; f; v; left; init = None})
 
 let parse_payload ~loc ~o = function
   | [{pstr_desc =
@@ -353,15 +389,19 @@ let parse_payload ~loc ~o = function
               Pexp_apply ({pexp_desc =
                 Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
       begin match f with
-      | "fold_left"   -> parse_fold_args loc ~o ~i:false true args
-      | "fold_right"  -> parse_fold_args loc ~o ~i:false false args
-      | "foldi_left"  -> parse_fold_args loc ~o ~i:true true args
-      | "foldi_right" -> parse_fold_args loc ~o ~i:true false args
-      | "iter"        -> parse_iter_args loc ~o ~i:false args
-      | "iteri"       -> parse_iter_args loc ~o ~i:true args
-      | "modify"      -> parse_modify_args loc ~o ~i:false args
-      | "modifyi"     -> parse_modify_args loc ~o ~i:true args
-      | operation     -> location_error ~loc "Unrecognized command: %s" operation
+      | "fold_left"     -> parse_fold_args loc ~o ~i:false true args
+      | "fold_right"    -> parse_fold_args loc ~o ~i:false false args
+      | "foldi_left"    -> parse_fold_args loc ~o ~i:true true args
+      | "foldi_right"   -> parse_fold_args loc ~o ~i:true false args
+      | "reduce_left"   -> parse_reduce_args loc ~o ~i:false true args
+      | "reduce_right"  -> parse_reduce_args loc ~o ~i:false false args
+      | "reducei_left"  -> parse_reduce_args loc ~o ~i:true true args
+      | "reducei_right" -> parse_reduce_args loc ~o ~i:true false args
+      | "iter"          -> parse_iter_args loc ~o ~i:false args
+      | "iteri"         -> parse_iter_args loc ~o ~i:true args
+      | "modify"        -> parse_modify_args loc ~o ~i:false args
+      | "modifyi"       -> parse_modify_args loc ~o ~i:true args
+      | operation       -> location_error ~loc "Unrecognized command: %s" operation
       end
   | [] -> location_error ~loc "Missing fold_left, fold_right or iter invocation."
   | _  -> location_error ~loc "Incorrect fold_left, fold_right or iter invocation."

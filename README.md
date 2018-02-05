@@ -85,6 +85,10 @@ The general syntax is
       - `fold_right`    : `(k -> 'a -> 'a)`
       - `foldi_left`    : `('a -> int -> k -> 'a)`
       - `foldi_right`   : `(int -> k -> 'a -> 'a)`
+      - `reduce_left`   : `(k -> k -> k)`
+      - `reduce_right`  : `(k -> k -> k)`
+      - `reducei_left`  : `(k -> int -> k -> k)`
+      - `reducei_right` : `(int -> k -> k -> k)`
       - `iter`          : `(k -> unit)`
       - `iteri`         : `(int -> k -> unit)`
       - `modify`        : `(k -> k)`
