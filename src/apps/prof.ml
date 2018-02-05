@@ -1,18 +1,6 @@
 open Bau
 open BigarrayExt
-
-let time s f =
-  let n = Sys.time () in
-  let r = f () in
-  Printf.printf "%-30s: %f sec\n" s (Sys.time () -. n);
-  r
-
-let generate kind n =
-  let gen  = Generators.random kind in
-  let native = Array.init n (fun _ -> gen ()) in
-  let f = Array1.of_array kind Fortran_layout native in
-  let c = Array1.of_array kind C_layout native in
-  native, f, c
+open Common
 
 let sum_n (v : float array) = Array.fold_left (+.) 0. v
 let sum_r v =
@@ -25,6 +13,11 @@ let sum_f v = [%array1.float64.fortran fold_left (+.) 0. v]
 let sum_fl v = [%array1.float64.fortran fold_left ~init:0. ~f:(+.) v]
 let sum_l v = [%array1.float64 fold_left (+.) 0. v]
 let sum_ll v = [%array1.float64 fold_left ~init:0. ~f:(+.) v]
+
+let sum_f_r v = [%array1.float64.fortran reduce_left (+.) v]
+let sum_fl_r v = [%array1.float64.fortran reduce_left ~f:(+.) v]
+let sum_l_r v = [%array1.float64 reduce_left (+.) v]
+let sum_ll_r v = [%array1.float64 reduce_left ~f:(+.) v]
 
 let gc_between oc s f =
   let open Gc in
@@ -83,7 +76,7 @@ let () =
                         ; minor_heap_size   = 4096000
           });
   let test name op = time name (fun () -> Array.map op data) in
-  let native, regular, typed, wlayout = gc_between stdout ""
+  let native, regular, typed, wlayout, reduced, reducwl = gc_between stdout ""
     (fun () ->
       let native  = test "native" (fun (n,_,_) -> sum_n n) in
       let regular = test "regular fold as for loop" (fun (_,f,_) -> sum_r f) in
@@ -91,7 +84,15 @@ let () =
       let _       = test "created fold_ppx labeled" (fun (_,f,_) -> sum_fl f) in
       let wlayout = test "no layout" (fun (_,f,_) -> sum_l f) in
       let _       = test "no layout labeled" (fun (_,f,_) -> sum_l f) in
-      native, regular, typed, wlayout)
+      let reduced = test "reduced fold_ppx" (fun (_,f,_) -> sum_f_r f) in
+      let _       = test "reduced fold_ppx labeled" (fun (_,f,_) -> sum_fl_r f) in
+      let reducwl = test "reduced no layout" (fun (_,f,_) -> sum_l_r f) in
+      let _       = test "reduced no layout labeled" (fun (_,f,_) -> sum_ll_r f) in
+      native, regular, typed, wlayout, reduced, reducwl)
   in
   Printf.printf "equal %b\n"
-    (native = regular && regular = typed && typed = wlayout)
+    (native = regular
+     && regular = typed
+     && typed = wlayout
+     && wlayout = reduced
+     && reduced = reducwl)
