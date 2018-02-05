@@ -162,7 +162,7 @@ let fold_apply_f ~o ~i ~upto fun_exp ~ref ~arr ~index =
     if upto then
       apply_f fun_exp [ lookup_ref ref; index_ex; get_array1 ~o arr index_ex]
     else
-      apply_f fun_exp [ get_array1 ~o arr index_ex; index_ex; lookup_ref ref]
+      apply_f fun_exp [ index_ex; get_array1 ~o arr index_ex; lookup_ref ref]
   else
     if upto then
       apply_f fun_exp [ lookup_ref ref; get_array1 ~o arr index_ex]
