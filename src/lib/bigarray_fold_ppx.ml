@@ -41,22 +41,6 @@ let location_error ?(sub=[]) ?(if_highlight="") ~loc fmt =
 (* Bigarray specific transforms *)
 type k = K : ('a, 'b) kind -> k
 
-let parse_kind ~loc = function
-  | "float32"         -> K Float32
-  | "float64"         -> K Float64
-  | "complex32"       -> K Complex32
-  | "complex64"       -> K Complex64
-  | "int8_signed"     -> K Int8_signed
-  | "int8_unsigned"   -> K Int8_unsigned
-  | "int16_signed"    -> K Int16_signed
-  | "int16_unsigned"  -> K Int16_unsigned
-  | "int32"           -> K Int32
-  | "int64"           -> K Int64
-  | "int"             -> K Int
-  | "nativeint"       -> K Nativeint
-  | "char"            -> K Char
-  | ks                -> location_error ~loc "Unrecognized kind: %s" ks
-
 let kind_to_types = function
   | K Float32         -> "float", "float32_elt"
   | K Float64         -> "float", "float64_elt"
@@ -120,11 +104,11 @@ let lookup_ref var =
 let assign_ref var val_exp =
   Exp.apply (ex_id ":=") (unlabeled [ex_id var; val_exp])
 
-let get_array1 ~open_ arr index_ex =
+let get ~open_ arr index_ex =
   Exp.apply (ex_id (opened ~open_ "unsafe_get"))
     (unlabeled [ex_id arr; index_ex])
 
-let set_array1 ~open_ arr index_ex new_value_ex =
+let set ~open_ arr index_ex new_value_ex =
   Exp.apply (ex_id (opened ~open_ "unsafe_set"))
     (unlabeled [ex_id arr; index_ex; new_value_ex])
 
@@ -150,62 +134,51 @@ let length_expr ~open_ ~minus_one arr =
   let arr_len_e = Exp.apply edim (unlabeled [ex_id arr]) in
   mo_exp ~minus_one arr_len_e
 
-type e = Parsetree.expression
+let let_unit exp =
+  let unit_l = lid "()" in
+  Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
+    (Exp.construct unit_l None)
 
-type operation =
-  (* 'acc -> 'a -> 'acc *)
-  | Fold of { open_ : bool
-            ; i     : bool
-            ; left  : bool
-            ; f     : e
-            ; init  : e option    (* None -> reduce *)
-            ; v     : e
-            }  (* upto, f, init, v*)
-  (* 'a -> unit *)
-  | Iter of { open_ : bool    (* Inside Array1? *)
-            ; i     : bool    (* Add the index ?*)
-            ; f     : e
-            ; v     : e
-            }
-  (* 'a -> 'b, value <- 'b *)
-  | Modify of { open_ : bool
-              ; i : bool
-              ; f : e
-              ; v : e
-              }
+type config =
+  { open_ : bool                        (* Is the function invocation in an open
+                                                          (ex. Array1) place? *)
+  ; with_index  : bool            (* Pass the position index to the function? *)
+  ; lambda      : Parsetree.expression               (* The function/lambda . *)
+  }
 
-let fold_apply_f ~open_ ~i ~upto fun_exp ~ref ~arr ~index =
+let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index arr =
   let index_ex = ex_id index in
-  if i then
+  if with_index then
     if upto then
-      apply_f fun_exp [ lookup_ref ref; index_ex; get_array1 ~open_ arr index_ex]
+      apply_f lambda [ lookup_ref ref_; index_ex; get ~open_ arr index_ex]
     else
-      apply_f fun_exp [ index_ex; get_array1 ~open_ arr index_ex; lookup_ref ref]
+      apply_f lambda [ index_ex; get ~open_ arr index_ex; lookup_ref ref_]
   else
     if upto then
-      apply_f fun_exp [ lookup_ref ref; get_array1 ~open_ arr index_ex]
+      apply_f lambda [ lookup_ref ref_; get ~open_ arr index_ex]
     else
-      apply_f fun_exp [ get_array1 ~open_ arr index_ex; lookup_ref ref]
+      apply_f lambda [ get ~open_ arr index_ex; lookup_ref ref_]
 
 (* TODO:
  * Generalize the variable naming mechanism, such that if a user passes an
  * initialial value as 'r' or an function as 'i' (for example), this will
  * still compile.
  * *)
-
-let fold_body ?(vec_arg="a") ~open_ ~i ~upto ~start ~minus_one fun_exp init =
+let fold_body ?(arr_arg="a") ?(ref_="r") ?(index="i") c
+    ~upto ~start ~minus_one init =
   let start_exp = Exp.constant (const_int start) in
-  let end_exp = length_expr ~open_ ~minus_one vec_arg in
-  make_ref "r" init
+  let end_exp = length_expr ~open_:c.open_ ~minus_one arr_arg in
+  make_ref ref_ init
     (Exp.sequence
-      (make_for_loop "i" ~start_exp ~end_exp upto
-        (assign_ref "r"
-          (fold_apply_f ~open_ ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
-      (lookup_ref "r"))
+      (make_for_loop index ~start_exp ~end_exp upto
+        (assign_ref ref_
+          (fold_apply_f c ~upto ~ref_ ~index arr_arg)))
+      (lookup_ref ref_))
 
-let reduce_body ?(vec_arg="a") ~open_ ~i ~upto ~start ~minus_one fun_exp =
+let reduce_body ?(arr_arg="a") ?(ref_="r") ?(index="i") c
+    ~upto ~start ~minus_one =
   let first_index, start_exp, end_exp, dir =
-    let li = length_expr ~open_ ~minus_one vec_arg in
+    let li = length_expr ~open_:c.open_ ~minus_one arr_arg in
     let fi = Exp.constant (const_int start) in
     if upto then
       fi
@@ -218,216 +191,260 @@ let reduce_body ?(vec_arg="a") ~open_ ~i ~upto ~start ~minus_one fun_exp =
       , fi
       , Downto
   in
-  make_ref "r" (get_array1 ~open_ vec_arg first_index)
+  make_ref ref_ (get ~open_:c.open_ arr_arg first_index)
     (Exp.sequence
-      (Exp.for_ (Pat.var (to_str "i")) start_exp end_exp dir
-        (assign_ref "r"
-          (fold_apply_f ~open_ ~i ~upto fun_exp ~ref:"r" ~arr:vec_arg ~index:"i")))
-      (lookup_ref "r"))
+      (Exp.for_ (Pat.var (to_str index)) start_exp end_exp dir
+        (assign_ref ref_
+          (fold_apply_f c ~upto ~ref_ ~index arr_arg)))
+      (lookup_ref ref_))
 
-let gen_fold_body ?vec_arg ~open_ ~i ~upto ~start ~minus_one fun_exp = function
-  | None      -> reduce_body ?vec_arg ~open_ ~i ~upto ~start ~minus_one fun_exp
-  | Some init -> fold_body ?vec_arg ~open_ ~i ~upto ~start ~minus_one fun_exp init
+let gen_fold_body c ~upto ~start ~minus_one = function
+  | None      -> reduce_body c ~upto ~start ~minus_one
+  | Some init -> fold_body c ~upto ~start ~minus_one init
 
-let let_unit exp =
-  let unit_l = lid "()" in
-  Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
-    (Exp.construct unit_l None)
-
-let iter_body ?(vec_arg="a") ~open_ ~i ~upto ~start ~minus_one fun_exp =
-  let index_c = "i" in
-  let index_ex = ex_id index_c in
-  make_for_loop index_c
+let iter_body ?(arr_arg="a") ?(index="i")
+  { open_; with_index; lambda } ~upto ~start ~minus_one =
+  let index_ex = ex_id index in
+  make_for_loop index
     ~start_exp:(Exp.constant (const_int start))
-    ~end_exp:(length_expr ~open_ ~minus_one vec_arg)
+    ~end_exp:(length_expr ~open_ ~minus_one arr_arg)
     upto
     (let_unit
-      (if i then
-        apply_f fun_exp [index_ex; get_array1 ~open_ vec_arg index_ex]
+      (if with_index then
+        apply_f lambda [index_ex; get ~open_ arr_arg index_ex]
       else
-        apply_f fun_exp [get_array1 ~open_ vec_arg index_ex]))
+        apply_f lambda [get ~open_ arr_arg index_ex]))
 
-let modify_body ?(vec_arg="a") ~open_ ~i ~upto ~start ~minus_one fun_exp =
-  let index_c = "i" in
-  let index_ex = ex_id index_c in
+let modify_body ?(arr_arg="a") ?(index="i")
+  { open_; with_index; lambda } ~upto ~start ~minus_one =
+  let index_ex = ex_id index in
   let new_value_exp =
-    if i then
-       apply_f fun_exp [index_ex; get_array1 ~open_ vec_arg index_ex]
+    if with_index then
+       apply_f lambda [index_ex; get ~open_ arr_arg index_ex]
      else
-       apply_f fun_exp [get_array1 ~open_ vec_arg index_ex]
+       apply_f lambda [get ~open_ arr_arg index_ex]
   in
-  make_for_loop index_c
+  make_for_loop index
     ~start_exp:(Exp.constant (const_int start))
-    ~end_exp:(length_expr ~open_ ~minus_one vec_arg)
+    ~end_exp:(length_expr ~open_ ~minus_one arr_arg)
     upto
-    (set_array1 ~open_ vec_arg index_ex new_value_exp)
+    (set ~open_ arr_arg index_ex new_value_exp)
 
-let fold_to_name i init left =
-  sprintf "%s%s_%s"
-    (match init with | None -> "reduce" | Some _ -> "fold")
-    (if i then "i" else "")
-    (if left then "left" else "right")
+module Operation = struct
 
-let operation_to_name = function
-  | Iter { i = false }     -> "iter"
-  | Iter { i = true }      -> "iteri"
-  | Fold { i; init; left } -> fold_to_name i init left
-  | Modify { i = false }   -> "modify"
-  | Modify { i = true }    -> "modifyi"
+  type t =
+    (* 'acc -> 'a -> 'acc *)
+    | Fold of { config  : config
+              ; left    : bool
+              (* fold_ left or right? *)
+              ; init    : Parsetree.expression option
+              (* optional init value,without one create a reduce instead. *)
+              }
 
-let array_value = function
-  | Iter { v } -> v
-  | Fold { v } -> v
-  | Modify { v } -> v
+    (* 'a -> unit *)
+    | Iter of config
 
-let operation_to_body = function
-  | Iter { open_; i; f; v }             -> iter_body ~open_ ~i ~upto:true f
-  | Fold { open_; i; left; f; init; v } -> gen_fold_body ~open_ ~i ~upto:left f init
-  | Modify { open_; i; f; v }           -> modify_body ~open_ ~i ~upto:true f
+    (* 'a -> 'b, value <- 'b *)
+    | Modify of config
+
+  let fold_to_name with_index init left =
+    sprintf "%s%s_%s"
+      (match init with | None -> "reduce" | Some _ -> "fold")
+      (if with_index then "i" else "")
+      (if left then "left" else "right")
+
+  let to_name = function
+    | Iter { with_index = false }   -> "iter"
+    | Iter { with_index = true }    -> "iteri"
+    | Fold { config; init; left }   -> fold_to_name config.with_index init left
+    | Modify { with_index = false } -> "modify"
+    | Modify { with_index = true }  -> "modifyi"
+
+  let to_body = function
+    | Iter config                -> iter_body config ~upto:true
+    | Modify config              -> modify_body config ~upto:true
+    | Fold { config; left; init} -> gen_fold_body config ~upto:left init
+
+  let open_ = function
+    | Iter config | Modify config | Fold { config; _ } -> config.open_
+
+end (* Operation *)
+
 
 (* Create a fast iter/fold using a reference and for-loop. *)
-let create_layout_specific ~open_ op kind layout =
-  let open Ast_helper in
-  let layout, start, minus_one = to_fold_params layout in
-  let name = operation_to_name op in
-  let body = operation_to_body op in
-  let v = array_value op in
-  make_let ~layout ~open_ kind name (body ~start ~minus_one)
-    (Exp.apply (ex_id name) (unlabeled [v]))
+module Create = struct
 
-(* Create a layout agnostic fold/iter function. *)
-let create ~open_ op kind =
-  let name = operation_to_name op in
-  let body = operation_to_body op in
-  let v = array_value op in
-  let name_f = name ^ "_fortran" in
-  let name_c = name ^ "_c" in
-  make_let ~arg:"b" ~open_ kind name
-    (let layout, start, minus_one = to_fold_params (L Fortran_layout) in
-    make_let ~layout ~open_ kind name_f (body ~start ~minus_one)
-      (* intended variable masking *)
-      (let layout, start, minus_one = to_fold_params (L C_layout) in
-      make_let ~layout ~open_ kind name_c (body ~start ~minus_one)
-        (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) [ Nolabel, (ex_id "b")])
-          [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-              (Exp.apply (ex_id name_f) [ Nolabel, (ex_id "b")])
-          ; Exp.case (Pat.construct (lid "C_layout") None)
-              (Exp.apply (ex_id name_c) [ Nolabel, (ex_id "b")])])))
-    (Exp.apply (ex_id name) [ Nolabel, v])
+  let layout_specific ~open_ op array1 kind layout =
+    let open Ast_helper in
+    let layout, start, minus_one = to_fold_params layout in
+    let name = Operation.to_name op in
+    let body = Operation.to_body op in
+    make_let ~layout ~open_ kind name (body ~start ~minus_one)
+      (Exp.apply (ex_id name) (unlabeled [array1]))
 
-let to_fs = function | true -> "fold_left" | false -> "fold_right"
+  (* Create a layout agnostic fold/iter function. *)
+  let layout_agnostic ~open_ op array1 kind =
+    let name = Operation.to_name op in
+    let body = Operation.to_body op in
+    let open_ = Operation.open_ op in
+    let name_f = name ^ "_fortran" in
+    let name_c = name ^ "_c" in
+    (* This variable renaming isn't necessary, it just makes the code, as output
+    * -dsource, eaiser to read. *)
+    let arg = "b" in
+    let arg_ex = [Nolabel, ex_id arg] in
+    make_let ~arg ~open_ kind name
+      (let layout, start, minus_one = to_fold_params (L Fortran_layout) in
+      make_let ~layout ~open_ kind name_f (body ~start ~minus_one)
+        (* intended variable masking *)
+        (let layout, start, minus_one = to_fold_params (L C_layout) in
+        make_let ~layout ~open_ kind name_c (body ~start ~minus_one)
+          (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg_ex)
+            [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                (Exp.apply (ex_id name_f) arg_ex)
+            ; Exp.case (Pat.construct (lid "C_layout") None)
+                (Exp.apply (ex_id name_c) arg_ex)])))
+      (Exp.apply (ex_id name) [ Nolabel, array1])
 
-let parse_fold_args loc ~open_ ~i left lst =
-  match List.assoc (Labelled "f") lst with
-  | f ->
-      begin match List.assoc (Labelled "init") lst with
-      | init ->
-          begin match List.assoc Nolabel lst with
-          | v -> Fold { open_; i; left; f; init = Some init; v }
-          | exception Not_found ->
-              location_error ~loc "Missing unlabeled array1 argument to %s."
-                (to_fs left)
+end (* Create *)
+
+module Parse = struct
+
+  let to_fs = function | true -> "fold_left" | false -> "fold_right"
+
+  let fold_args_unlabled loc ~open_ ~with_index left lst =
+    let n = List.length lst in
+    if n < 3 then
+      location_error ~loc "Missing %s arguments." (to_fs left)
+    else if n > 3 then
+      location_error ~loc "Too many arguments to %s." (to_fs left)
+    else
+      match lst with
+      | [ Nolabel, lambda; Nolabel, init; Nolabel, v ] ->
+          let config = {open_; with_index; lambda} in
+          Operation.Fold { config; left; init = Some init}, v
+      | _ ->
+        location_error ~loc "Missing labeled f argument to %s." (to_fs left)
+
+  let fold_args loc ~open_ ~with_index left lst =
+    match List.assoc (Labelled "f") lst with
+    | lambda ->
+        begin match List.assoc (Labelled "init") lst with
+        | init ->
+            begin match List.assoc Nolabel lst with
+            | v -> let config = {open_; with_index; lambda} in
+                   Operation.Fold { config ; left; init = Some init}, v
+            | exception Not_found ->
+                location_error ~loc "Missing unlabeled array1 argument to %s."
+                  (to_fs left)
+            end
+        | exception Not_found ->
+            location_error ~loc "Missing labeled init argument to %s." (to_fs left)
+        end
+    | exception Not_found ->
+        fold_args_unlabled loc ~open_ ~with_index left lst
+
+  let initless_args loc lst funs k =
+    match List.assoc (Labelled "f") lst with
+    | f ->
+        begin match List.assoc Nolabel lst with
+        | v -> k f v
+        | exception Not_found ->
+            location_error ~loc "Missing unlabeled array1 argument to %s." funs
+        end
+    | exception Not_found  ->
+        let n = List.length lst in
+        if n < 2 then
+          location_error ~loc "Missing %s arguments" funs
+        else if n > 2 then
+          location_error ~loc "Too many argument to %s" funs
+        else
+          begin match lst with
+          | [ Nolabel, f
+            ; Nolabel, v
+            ] -> k f v
+          | _ ->
+            location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
           end
-      | exception Not_found ->
-          location_error ~loc "Missing labeled init argument to %s." (to_fs left)
-      end
-  | exception Not_found ->
-      let n = List.length lst in
-      if n < 3 then
-        location_error ~loc "Missing %s arguments." (to_fs left)
-      else if n > 3 then
-        location_error ~loc "Too many arguments to %s." (to_fs left)
-      else
-        begin match lst with
-        | [ Nolabel, f
-          ; Nolabel, init
-          ; Nolabel, v
-          ] -> Fold { open_; i; left; f; init = Some init; v}
-        | _ ->
-          location_error ~loc "Missing labeled f argument to %s." (to_fs left)
+
+  let iter_args loc ~open_ ~with_index lst =
+    initless_args loc lst "iter"
+      (fun lambda v -> Operation.Iter {open_; with_index; lambda}, v)
+
+  let modify_args loc ~open_ ~with_index lst =
+    initless_args loc lst "modify"
+      (fun lambda v -> Operation.Modify {open_; with_index; lambda}, v)
+
+  let reduce_args loc ~open_ ~with_index left lst =
+    initless_args loc lst "reduce"
+      (fun lambda v ->
+         let config = {open_; with_index; lambda} in
+         Operation.Fold { config; left; init = None}, v)
+
+  let payload ~loc ~open_ = function
+    | [ { pstr_desc =
+          Pstr_eval
+            ( { pexp_desc =
+                Pexp_apply ( { pexp_desc =
+                  Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
+        begin match f with
+        | "fold_left"     -> fold_args loc ~open_ ~with_index:false true args
+        | "fold_right"    -> fold_args loc ~open_ ~with_index:false false args
+        | "foldi_left"    -> fold_args loc ~open_ ~with_index:true true args
+        | "foldi_right"   -> fold_args loc ~open_ ~with_index:true false args
+        | "reduce_left"   -> reduce_args loc ~open_ ~with_index:false true args
+        | "reduce_right"  -> reduce_args loc ~open_ ~with_index:false false args
+        | "reducei_left"  -> reduce_args loc ~open_ ~with_index:true true args
+        | "reducei_right" -> reduce_args loc ~open_ ~with_index:true false args
+        | "iter"          -> iter_args loc ~open_ ~with_index:false args
+        | "iteri"         -> iter_args loc ~open_ ~with_index:true args
+        | "modify"        -> modify_args loc ~open_ ~with_index:false args
+        | "modifyi"       -> modify_args loc ~open_ ~with_index:true args
+        | operation       -> location_error ~loc "Unrecognized command: %s" operation
         end
+    | [] -> location_error ~loc "Missing fold_left, fold_right or iter invocation."
+    | _  -> location_error ~loc "Incorrect fold_left, fold_right or iter invocation."
 
-let parse_initless_args loc lst funs k =
-  match List.assoc (Labelled "f") lst with
-  | f ->
-      begin match List.assoc Nolabel lst with
-      | v -> k f v
-      | exception Not_found ->
-          location_error ~loc "Missing unlabeled array1 argument to %s." funs
-      end
-  | exception Not_found  ->
-      let n = List.length lst in
-      if n < 2 then
-        location_error ~loc "Missing %s arguments" funs
-      else if n > 2 then
-        location_error ~loc "Too many argument to %s" funs
-      else
-        begin match lst with
-        | [ Nolabel, f
-          ; Nolabel, v
-          ] -> k f v
-        | _ ->
-          location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
-        end
+  let layout ~loc = function
+    | None            -> None
+    | Some "fortran"  -> Some (L Fortran_layout)
+    | Some "c"        -> Some (L C_layout)
+    | Some ls         -> location_error ~loc "Unrecognized layout: %s" ls
 
-let parse_iter_args loc ~open_ ~i lst =
-  parse_initless_args loc lst "iter"
-    (fun f v -> Iter {open_; i; f; v})
+  let kind ~loc = function
+    | "float32"         -> K Float32
+    | "float64"         -> K Float64
+    | "complex32"       -> K Complex32
+    | "complex64"       -> K Complex64
+    | "int8_signed"     -> K Int8_signed
+    | "int8_unsigned"   -> K Int8_unsigned
+    | "int16_signed"    -> K Int16_signed
+    | "int16_unsigned"  -> K Int16_unsigned
+    | "int32"           -> K Int32
+    | "int64"           -> K Int64
+    | "int"             -> K Int
+    | "nativeint"       -> K Nativeint
+    | "char"            -> K Char
+    | ks                -> location_error ~loc "Unrecognized kind: %s" ks
 
-let parse_modify_args loc ~open_ ~i lst =
-  parse_initless_args loc lst "modify"
-    (fun f v -> Modify {open_; i; f; v})
+end (* Parse *)
 
-let parse_reduce_args loc ~open_ ~i left lst =
-  parse_initless_args loc lst "reduce"
-    (fun f v -> Fold {open_; i; f; v; left; init = None})
-
-let parse_payload ~loc ~open_ = function
-  | [ { pstr_desc =
-        Pstr_eval
-          ( { pexp_desc =
-              Pexp_apply ( { pexp_desc =
-                Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
-      begin match f with
-      | "fold_left"     -> parse_fold_args loc ~open_ ~i:false true args
-      | "fold_right"    -> parse_fold_args loc ~open_ ~i:false false args
-      | "foldi_left"    -> parse_fold_args loc ~open_ ~i:true true args
-      | "foldi_right"   -> parse_fold_args loc ~open_ ~i:true false args
-      | "reduce_left"   -> parse_reduce_args loc ~open_ ~i:false true args
-      | "reduce_right"  -> parse_reduce_args loc ~open_ ~i:false false args
-      | "reducei_left"  -> parse_reduce_args loc ~open_ ~i:true true args
-      | "reducei_right" -> parse_reduce_args loc ~open_ ~i:true false args
-      | "iter"          -> parse_iter_args loc ~open_ ~i:false args
-      | "iteri"         -> parse_iter_args loc ~open_ ~i:true args
-      | "modify"        -> parse_modify_args loc ~open_ ~i:false args
-      | "modifyi"       -> parse_modify_args loc ~open_ ~i:true args
-      | operation       -> location_error ~loc "Unrecognized command: %s" operation
-      end
-  | [] -> location_error ~loc "Missing fold_left, fold_right or iter invocation."
-  | _  -> location_error ~loc "Incorrect fold_left, fold_right or iter invocation."
-
-let parse_layout ~loc = function
-  | None            -> None
-  | Some "fortran"  -> Some (L Fortran_layout)
-  | Some "c"        -> Some (L C_layout)
-  | Some ls         -> location_error ~loc "Unrecognized layout: %s" ls
-
-let parse ?layout loc ~open_ ~kind payload =
+let create loc ~open_ ~kind payload layout =
   try
-    let kind   = parse_kind ~loc kind in
-    let op     = parse_payload ~loc ~open_ payload in
-    match parse_layout ~loc layout with
-    | None   -> create ~open_ op kind
-    | Some l -> create_layout_specific ~open_ op kind l
+    let kind       = Parse.kind ~loc kind in
+    let op, array1 = Parse.payload ~loc ~open_ payload in
+    match Parse.layout ~loc layout with
+    | None   -> Create.layout_agnostic ~open_ op array1 kind
+    | Some l -> Create.layout_specific ~open_ op array1 kind l
   with Location.Error e ->
     Exp.extension ~loc (extension_of_error e)
 
 let transform loc txt payload def =
   match split '.' txt with
-  | [ "array1"; kind ]          -> parse loc ~open_:false ~kind payload
-  | [ "array1"; kind; layout ]  -> parse ~layout loc ~open_:false ~kind payload
-  | [ "open1"; kind ]           -> parse loc ~open_:true ~kind payload
-  | [ "open1"; kind; layout ]   -> parse ~layout loc ~open_:true ~kind payload
+  | [ "array1"; kind ]     -> create loc ~open_:false ~kind payload None
+  | [ "array1"; kind; l ]  -> create loc ~open_:false ~kind payload (Some l)
+  | [ "open1"; kind ]      -> create loc ~open_:true  ~kind payload None
+  | [ "open1"; kind; l ]   -> create loc ~open_:true  ~kind payload (Some l)
   | _ -> def ()
 
 let bigarray_fold_mapper =
