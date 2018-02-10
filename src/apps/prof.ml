@@ -69,6 +69,7 @@ let () =
       int_of_string Sys.argv.(1)
       , int_of_string Sys.argv.(2)
   in
+  print_endline "Test of folds by summing floats.";
   Printf.printf "%d samples of arrays of length %d \n" samples n;
   let data = Array.init samples (fun _ -> generate Float64 n) in
   Gc.(set { (get ()) with max_overhead      = 1000000
@@ -83,7 +84,7 @@ let () =
       let typed   = test "created fold_ppx" (fun (_,f,_) -> sum_f f) in
       let _       = test "created fold_ppx labeled" (fun (_,f,_) -> sum_fl f) in
       let wlayout = test "no layout" (fun (_,f,_) -> sum_l f) in
-      let _       = test "no layout labeled" (fun (_,f,_) -> sum_l f) in
+      let _       = test "no layout labeled" (fun (_,f,_) -> sum_ll f) in
       let reduced = test "reduced fold_ppx" (fun (_,f,_) -> sum_f_r f) in
       let _       = test "reduced fold_ppx labeled" (fun (_,f,_) -> sum_fl_r f) in
       let reducwl = test "reduced no layout" (fun (_,f,_) -> sum_l_r f) in

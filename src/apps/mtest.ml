@@ -15,6 +15,7 @@ let print_array1 v =
 
 let () =
   let _, f, _ = generate Float64 10 in
+  print_endline "Test of modification";
   printf "Before:\n";
   print_array1 f;
   modify (fun x -> x /. 2.0) f;

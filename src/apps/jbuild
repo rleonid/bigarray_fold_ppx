@@ -4,8 +4,12 @@
   (names (prof
           test
           itest
-          mtest))
+          mtest
+          prof2
+          itest2
+          mtest2))
   (libraries (bau core_bench))
+  (flags -dsource)
   (preprocess (pps (bigarray_fold_ppx)))
   ))
 
@@ -15,5 +19,8 @@
           test.exe
           itest.exe
           mtest.exe
+          prof2.exe
+          itest2.exe
+          mtest2.exe
           ))
    ))

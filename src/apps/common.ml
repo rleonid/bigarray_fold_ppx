@@ -15,4 +15,44 @@ let generate kind n =
   let c = Array1.of_array kind C_layout native in
   native, f, c
 
-
+let gc_between oc s f =
+  let open Gc in
+  let before = stat () in
+  let r = f () in
+  let after = stat () in
+  Printf.fprintf oc "%s Gc change: \n\
+    \t { minor_words : %f;\n\
+    \t   promoted_words : %f;\n\
+    \t   major_words : %f;\n\
+    \t   minor_collections : %d;\n\
+    \t   major_collections : %d;\n\
+    \t   heap_words : %d;\n\
+    \t   heap_chunks : %d;\n\
+    \t   live_words : %d;\n\
+    \t   live_blocks : %d;\n\
+    \t   free_words : %d;\n\
+    \t   free_blocks : %d;\n\
+    \t   largest_free : %d;\n\
+    \t   fragments : %d;\n\
+    \t   compactions : %d;\n\
+    \t   top_heap_words : %d;\n\
+    \t   stack_size : %d;\n\
+    \t }\n"
+      s
+      (after.minor_words -. before.minor_words)
+      (after.promoted_words -. before.promoted_words)
+      (after.major_words -. before.major_words)
+      (after.minor_collections - before.minor_collections)
+      (after.major_collections - before.major_collections)
+      (after.heap_words - before.heap_words)
+      (after.heap_chunks - before.heap_chunks)
+      (after.live_words - before.live_words)
+      (after.live_blocks - before.live_blocks)
+      (after.free_words - before.free_words)
+      (after.free_blocks - before.free_blocks)
+      (after.largest_free - before.largest_free)
+      (after.fragments - before.fragments)
+      (after.compactions - before.compactions)
+      (after.top_heap_words - before.top_heap_words)
+      (after.stack_size - before.stack_size);
+  r
