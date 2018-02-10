@@ -22,17 +22,6 @@ open Ast_helper
 open Printf
 open Bigarray
 
-(* Utilities *)
-let split c s =
-  let rec loop o =
-    try
-      let i = String.index_from s o c in
-      (String.sub s o (i - o)) :: (loop (i + 1))
-    with Not_found ->
-      [String.sub s o (String.length s - o)]
-  in
-  loop 0
-
 let location_error ?(sub=[]) ?(if_highlight="") ~loc fmt =
   Printf.ksprintf (fun msg ->
     raise Location.(Error { loc; msg; sub; if_highlight; }))
@@ -406,10 +395,9 @@ module Parse = struct
     | _  -> location_error ~loc "Incorrect fold_left, fold_right or iter invocation."
 
   let layout ~loc = function
-    | None            -> None
-    | Some "fortran"  -> Some (L Fortran_layout)
-    | Some "c"        -> Some (L C_layout)
-    | Some ls         -> location_error ~loc "Unrecognized layout: %s" ls
+    | "fortran"  -> (L Fortran_layout)
+    | "c"        -> (L C_layout)
+    | ls         -> location_error ~loc "Unrecognized layout: %s" ls
 
   let kind ~loc = function
     | "float32"         -> K Float32
@@ -429,23 +417,29 @@ module Parse = struct
 
 end (* Parse *)
 
-let create loc ~open_ ~kind payload layout =
-  try
-    let kind       = Parse.kind ~loc kind in
-    let op, array1 = Parse.payload ~loc ~open_ payload in
-    match Parse.layout ~loc layout with
-    | None   -> Create.layout_agnostic ~open_ op array1 kind
-    | Some l -> Create.layout_specific ~open_ op array1 kind l
-  with Location.Error e ->
-    Exp.extension ~loc (extension_of_error e)
-
 let transform loc txt payload def =
-  match split '.' txt with
-  | [ "array1"; kind ]     -> create loc ~open_:false ~kind payload None
-  | [ "array1"; kind; l ]  -> create loc ~open_:false ~kind payload (Some l)
-  | [ "open1"; kind ]      -> create loc ~open_:true  ~kind payload None
-  | [ "open1"; kind; l ]   -> create loc ~open_:true  ~kind payload (Some l)
-  | _ -> def ()
+  let split =  String.split_on_char '.' txt in
+  let rec is_open = function
+    | "array1" :: t -> has_kind ~open_:false t
+    | "open1" :: t  -> has_kind ~open_:true t
+    | _             -> def ()
+  and has_kind ~open_ = function
+    | kstr :: t       -> let kind = Parse.kind ~loc kstr in
+                         is_layout_or_kind ~open_ ~kind t
+    | _               -> def ()
+  and is_layout_or_kind ~open_ ~kind slst =
+    try
+      match slst with
+      | []         -> let op, array1 = Parse.payload ~loc ~open_ payload in
+                      Create.layout_agnostic ~open_ op array1 kind
+      | lstr :: [] -> let layout = Parse.layout ~loc lstr in
+                      let op, array1 = Parse.payload ~loc ~open_ payload in
+                      Create.layout_specific ~open_ op array1 kind layout
+      | _          -> def ()
+    with Location.Error e ->
+      Exp.extension ~loc (extension_of_error e)
+  in
+  is_open split
 
 let bigarray_fold_mapper =
   { default_mapper with
