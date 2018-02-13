@@ -57,10 +57,10 @@ module K = struct
     | K Int32           -> "int32"
     | K Int64           -> "int64"
     | K Int             -> "int"
-    | K Nativeint       -> "Nativeint"
-    | K Complex32       -> "Complex32"
-    | K Complex64       -> "Complex64"
-    | K Char            -> "Char"
+    | K Nativeint       -> "nativeint"
+    | K Complex32       -> "complex32"
+    | K Complex64       -> "complex64"
+    | K Char            -> "char"
 
 end (* K *)
 
