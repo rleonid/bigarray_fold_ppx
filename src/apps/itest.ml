@@ -28,6 +28,7 @@ let print_as_right_fold v =
 
 let () =
   let _, f, c = generate Float64 10 in
+  print_endline "Test of iteration";
   printf "Fortran with out layout:\n";
   print_all f;
   printf "Fortran with layout:\n";
