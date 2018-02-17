@@ -64,52 +64,50 @@ module K = struct
 
 end (* K *)
 
-type index_offsets =
+type index_offset =
   | Aligned
   | AddOne
   | SubOne
 
 module L = struct
 
-  type t = L : 'a layout -> t
+  (* We rename and shorten the layout options so that matching against the can
+   * be faster. *)
+  type t =
+    | F                                                     (* Fortran_layout *)
+    | C                                                           (* C_layout *)
 
   (* layout name for constraint,
   * starting index,
   * minus one for ending point
   * suffix *)
 
-  type layout_specific_for_options =
-    { constraint_name : string
-    ; start_index     : int
-    ; minus_one       : bool                           (* When calculating end. *)
-    }
+  let start = function
+    | F -> 1
+    | C -> 0
 
-  let to_fold_params = function
-    | L Fortran_layout ->
-        { constraint_name = "fortran_layout"
-        ; start_index     = 1
-        ; minus_one       = false
-        }
-    | L C_layout       ->
-        { constraint_name = "c_layout"
-        ; start_index     = 0
-        ; minus_one       = true
-        }
+  let minus_one = function
+    | F -> false
+    | C -> true
+
+  let constraint_name = function
+    | F -> "fortran_layout"
+    | C -> "c_layout"
 
   let to_pattern_case = function
-    | L Fortran_layout -> "Fortran_layout"
-    | L C_layout       -> "C_layout"
+    | F -> "Fortran_layout"
+    | C -> "C_layout"
 
   let to_name_suffix = function
-    | L Fortran_layout -> "_fortran"
-    | L C_layout       -> "_c"
+    | F -> "_fortran"
+    | C -> "_c"
 
   let to_index_offsets layout1 layout2 =
     match layout1, layout2 with
-    | L C_layout,       L C_layout       -> Aligned
-    | L Fortran_layout, L Fortran_layout -> Aligned
-    | L Fortran_layout, L C_layout       -> SubOne
-    | L C_layout,       L Fortran_layout -> AddOne
+    | C, C -> Aligned
+    | F, F -> Aligned
+    | F, C -> SubOne
+    | C, F -> AddOne
 
 end (* L *)
 
@@ -120,16 +118,6 @@ let lid s = Location.mkloc (Longident.parse s) Location.none
 
 let ex_id s = Exp.ident (lid s)
 
-let opened ~open_ s =
-  if open_ then s else "Array1." ^ s
-
-let constrain_vec ~open_ kind layout_s vec_var =
-  let t1, t2 = K.to_constraint_types kind in
-  let econstr s = Typ.constr (lid s) [] in
-  Pat.constraint_ (Pat.var (to_str vec_var))
-    (Typ.constr (lid (opened ~open_ "t"))
-       [ econstr t1; econstr t2; econstr layout_s])
-
 let unlabeled lst =
   List.map (fun ex -> Nolabel, ex) lst
 
@@ -139,13 +127,6 @@ let make_ref var init exp =
         (Exp.apply (ex_id "ref") (unlabeled [init]))]
     exp
 
-let create_array1 ~open_ var kind layout size exp =
-  Exp.let_ Nonrecursive
-    [ Vb.mk (Pat.var (to_str var))
-        (Exp.apply (ex_id (opened ~open_ "create"))
-           (unlabeled [kind; layout; size]))]
-    exp
-
 let lookup_ref var =
   Exp.apply (ex_id "!") (unlabeled [ex_id var])
 
@@ -153,23 +134,11 @@ let lookup_ref var =
 let assign_ref var val_exp =
   Exp.apply (ex_id ":=") (unlabeled [ex_id var; val_exp])
 
-let get ~open_ arr index_ex =
-  Exp.apply (ex_id (opened ~open_ "unsafe_get"))
-    (unlabeled [ex_id arr; index_ex])
-
-let set ~open_ arr index_ex new_value_ex =
-  Exp.apply (ex_id (opened ~open_ "unsafe_set"))
-    (unlabeled [ex_id arr; index_ex; new_value_ex])
-
 let apply f args =
   Exp.apply f (unlabeled args)
 
-let make_for_loop index ~start_exp ~end_exp upto body_exp =
-  if upto
-  then Exp.for_ (Pat.var (to_str index)) start_exp end_exp Upto body_exp
-  else Exp.for_ (Pat.var (to_str index)) end_exp start_exp Downto body_exp
-
-let const_int n = Pconst_integer (string_of_int n, None)
+let const_int n =
+  Pconst_integer (string_of_int n, None)
 
 let plus_one exp =
   Exp.apply (ex_id "+")
@@ -184,19 +153,22 @@ let index_offset_to_offset_index index = function
   | SubOne  -> minus_one index
   | AddOne  -> plus_one index
 
-let mo_expr ~mo exp = if mo then minus_one exp else exp
-
-let dim_expr ~open_ arr =
-  let edim = ex_id (opened ~open_ "dim") in
-  Exp.apply edim (unlabeled [ex_id arr])
-
-let length_expr ~open_ ~mo arr =
-  mo_expr ~mo (dim_expr ~open_ arr)
-
 let let_unit exp =
   let unit_l = lid "()" in
   Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
     (Exp.construct unit_l None)
+
+let constrain_vec t kind layout_s vec_var =
+  let t1, t2 = K.to_constraint_types kind in
+  let econstr s = Typ.constr (lid s) [] in
+  Pat.constraint_ (Pat.var (to_str vec_var))
+    (Typ.constr (lid t) [ econstr t1; econstr t2; econstr layout_s])
+
+let efor i s u e b =
+  if u then
+    Exp.for_ i s e Upto b
+  else
+    Exp.for_ i e s Downto b
 
 module Common_config = struct
 
@@ -228,8 +200,8 @@ let remove_and_assoc el list =
 module Common_parse = struct
 
   let layout ?(what="layout") ~loc = function
-    | "fortran"  -> L.(L Fortran_layout)
-    | "c"        -> L.(L C_layout)
+    | "fortran"  -> L.F
+    | "c"        -> L.C
     | ls         -> location_error ~loc "Unrecognized %s: %s" what ls
 
   let kind ~loc = function
@@ -256,874 +228,1152 @@ module Common_parse = struct
 
 end (* Common_parse *)
 
-module Single = struct
+module type Dimension_dependent = sig
 
-  module Body = struct                             (* Ie. Function body terms *)
+  val opened : open_: bool
+             -> string
+             -> string
 
-    open Common_config
+  type index_representation
+  type index_expression
 
-    let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index arr =
-      let index_ex = ex_id index in
-      let arg_list =
-        if with_index then
-          if upto then
-            [ lookup_ref ref_; index_ex; get ~open_ arr index_ex]
+  val init_ir : index_representation
+
+  val ie_of_ir : index_representation -> index_expression
+
+  val ie_to_elist : index_expression -> Parsetree.expression list
+
+  val offset : index_expression -> index_offset -> index_expression
+
+  val first : L.t
+            -> index_expression
+
+  val dim : open_:bool
+          -> variable:string
+          -> index_expression
+
+  val make_for_loop : index_representation
+                    -> open_:bool
+                    -> skip_first:bool
+                    -> upto:bool
+                    -> L.t
+                    -> string
+                    -> Parsetree.expression                           (* body *)
+                    -> Parsetree.expression
+
+end (* Dimension_dependent *)
+
+module A1d : Dimension_dependent = struct
+
+  let opened ~open_ s =
+    if open_ then s else "Array1." ^ s
+
+  type index_representation = string
+  type index_expression = Parsetree.expression
+
+  (* TODO:
+   * Generalize the variable naming mechanism, such that if a user passes an
+   * initialial value or a function as 'i',  this will still compile.
+   *)
+  let init_ir = "i"
+  let ie_of_ir i1 = ex_id i1
+  let ie_to_elist ie = [ie]
+
+  let offset ie = function
+    | Aligned -> ie
+    | SubOne  -> minus_one ie
+    | AddOne  -> plus_one ie
+
+  let first layout =
+    let start = L.start layout in
+    Exp.constant (const_int start)
+
+  let second layout =
+    plus_one (first layout)
+
+  let dim ~open_ ~variable =
+    let edim = ex_id (opened ~open_ "dim") in
+    Exp.apply edim (unlabeled [ex_id variable])
+
+  let last ~open_ ~variable layout =
+    let d = dim ~open_ ~variable in
+    if L.minus_one layout then
+      minus_one d
+    else
+      d
+
+  let penultimate ~open_ ~variable layout =
+    minus_one (last ~open_ ~variable layout)
+
+  let make_for_loop index ~open_ ~skip_first ~upto layout arr body_exp =
+    let iv = Pat.var (to_str index) in
+    let first = first layout in
+    let last  = last ~open_ ~variable:arr layout in
+    if skip_first
+    then begin
+      let sec = second layout in
+      let pen = penultimate ~open_ ~variable:arr layout in
+      if upto
+      then efor iv sec true last body_exp
+      else efor iv first false pen body_exp
+    end else begin
+      efor iv first upto last body_exp
+    end
+
+end (* A1d *)
+
+module A2d : Dimension_dependent = struct
+
+  let opened ~open_ s =
+    if open_ then s else "Array2." ^ s
+
+  type index_representation = string * string
+  type index_expression = Parsetree.expression * Parsetree.expression
+
+  let init_ir = "i", "j"
+  let ie_of_ir (i1, i2) = ex_id i1, ex_id i2
+  let ie_to_elist (ie1, ie2) = [ie1; ie2]
+
+  let offset (ie1, ie2) = function
+    | Aligned -> ie1, ie2
+    | SubOne  -> minus_one ie1, minus_one ie2
+    | AddOne  -> plus_one ie1, plus_one ie2
+
+  let first layout =
+    let start = L.start layout in
+    Exp.constant (const_int start)
+    , Exp.constant (const_int start)
+
+  let second layout =
+    let start = L.start layout in
+    match layout with
+    | L.F ->
+      Exp.constant (const_int (start + 1))
+      , Exp.constant (const_int start)
+    | L.C ->
+      Exp.constant (const_int start)
+      , Exp.constant (const_int (start + 1))
+
+  let dim ~open_ ~variable =
+    let edim1 = ex_id (opened ~open_ "dim1") in
+    let e1 = Exp.apply edim1 (unlabeled [ex_id variable]) in
+    let edim2 = ex_id (opened ~open_ "dim2") in
+    let e2 = Exp.apply edim2 (unlabeled [ex_id variable]) in
+    e1, e2
+
+  let last ~open_ ~variable layout =
+    let d1, d2 = dim ~open_ ~variable in
+    if L.minus_one layout then
+      minus_one d1, minus_one d2
+    else
+      d1, d2
+
+  let penultimate ~open_ ~variable layout =
+    let d1, d2 = last ~open_ ~variable layout in
+    match layout with
+    | L.F -> minus_one d1, d2
+    | L.C -> d1, minus_one d2
+
+  let make_for_loop (i1, i2) ~open_ ~skip_first ~upto layout arr body_exp =
+    let iv1 = Pat.var (to_str i1) in
+    let iv2 = Pat.var (to_str i2) in
+    let f1, f2 = first layout in
+    let l1, l2 = last ~open_ ~variable:arr layout in
+    let s1, s2 = second layout in
+    let p1, p2 = penultimate ~open_ ~variable:arr layout in
+    if skip_first
+    then begin
+      match upto, layout with
+      | true, L.F ->
+          Exp.let_ Nonrecursive [ Vb.mk iv2 f2] (Exp.sequence
+            (efor iv1 s1 true l1 body_exp)
+            (efor iv2 s2 true l2 (efor iv1 f1 true l1 body_exp)))
+      | true, L.C ->
+          Exp.let_ Nonrecursive [ Vb.mk iv1 f1] (Exp.sequence
+            (efor iv2 s2 true l2 body_exp)
+            (efor iv1 s1 true l1 (efor iv2 f2 true l2 body_exp)))
+      | false, L.F ->
+          Exp.let_ Nonrecursive [ Vb.mk iv2 l2] (Exp.sequence
+            (efor iv1 f1 false p1 body_exp)
+            (efor iv2 f2 false p2 (efor iv1 f1 false l1 body_exp)))
+      | false, L.C ->
+          Exp.let_ Nonrecursive [ Vb.mk iv1 l1] (Exp.sequence
+            (efor iv2 f2 false p2 body_exp)
+            (efor iv1 f1 false p1 (efor iv2 f2 false l2 body_exp)))
+    end else begin
+      match layout with
+      | L.F -> efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body_exp)
+      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 body_exp)
+    end
+
+end (* A2d *)
+
+module A3d : Dimension_dependent = struct
+
+  let opened ~open_ s =
+    if open_ then s else "Array3." ^ s
+
+  type index_representation = string * string * string
+  type index_expression =
+    Parsetree.expression * Parsetree.expression * Parsetree.expression
+
+  let init_ir = "i", "j", "k"
+  let ie_of_ir (i1, i2, i3) = ex_id i1, ex_id i2, ex_id i3
+  let ie_to_elist (ie1, ie2, ie3) = [ie1; ie2; ie3]
+
+  let offset (ie1, ie2, ie3) = function
+    | Aligned -> ie1, ie2, ie3
+    | SubOne  -> minus_one ie1, minus_one ie2, minus_one ie3
+    | AddOne  -> plus_one ie1, plus_one ie2, plus_one ie3
+
+  let first layout =
+    let start = L.start layout in
+    Exp.constant (const_int start)
+    , Exp.constant (const_int start)
+    , Exp.constant (const_int start)
+
+  let second layout =
+    let start = L.start layout in
+    match layout with
+    | L.F ->
+      Exp.constant (const_int (start + 1))
+      , Exp.constant (const_int start)
+      , Exp.constant (const_int start)
+    | L.C ->
+      Exp.constant (const_int start)
+      , Exp.constant (const_int start)
+      , Exp.constant (const_int (start + 1))
+
+  let dim ~open_ ~variable =
+    let edim1 = ex_id (opened ~open_ "dim1") in
+    let e1 = Exp.apply edim1 (unlabeled [ex_id variable]) in
+    let edim2 = ex_id (opened ~open_ "dim2") in
+    let e2 = Exp.apply edim2 (unlabeled [ex_id variable]) in
+    let edim3 = ex_id (opened ~open_ "dim3") in
+    let e3 = Exp.apply edim3 (unlabeled [ex_id variable]) in
+    e1, e2, e3
+
+  let last ~open_ ~variable layout =
+    let d1, d2, d3 = dim ~open_ ~variable in
+    if L.minus_one layout then
+      minus_one d1, minus_one d2, minus_one d3
+    else
+      d1, d2, d3
+
+  let penultimate ~open_ ~variable layout =
+    let d1, d2, d3 = last ~open_ ~variable layout in
+    match layout with
+    | L.F -> minus_one d1, d2, d3
+    | L.C -> d1, d2, minus_one d3
+
+  let make_for_loop (i1, i2, i3) ~open_ ~skip_first ~upto layout arr body_exp =
+    let iv1 = Pat.var (to_str i1) in
+    let iv2 = Pat.var (to_str i2) in
+    let iv3 = Pat.var (to_str i3) in
+    let f1, f2, f3 = first layout in
+    let l1, l2, l3 = last ~open_ ~variable:arr layout in
+    if skip_first
+    then begin
+      let s1, s2, s3 = second layout in
+      let p1, p2, p3 = penultimate ~open_ ~variable:arr layout in
+      match upto, layout with
+      | true, L.F ->
+          Exp.let_ Nonrecursive [ Vb.mk iv3 f3] (Exp.sequence
+            (efor iv2 s2 true l2 (efor iv1 s1 true l1 body_exp))
+            (efor iv3 s3 true l3 (efor iv2 f2 true l2 (efor iv1 f1 true l1 body_exp))))
+      | true, L.C ->
+          Exp.let_ Nonrecursive [ Vb.mk iv1 f1] (Exp.sequence
+            (efor iv2 s2 true l2 (efor iv3 s3 true l3 body_exp))
+            (efor iv1 s1 true l1 (efor iv2 f2 true l2 (efor iv3 s3 true l3 body_exp))))
+      | false, L.F ->
+          Exp.let_ Nonrecursive [ Vb.mk iv3 l3] (Exp.sequence
+            (efor iv2 f2 false p2 (efor iv1 f1 false p1 body_exp))
+            (efor iv3 f3 false p3 (efor iv2 f2 false p2 (efor iv1 f1 false p1 body_exp))))
+      | false, L.C ->
+          Exp.let_ Nonrecursive [ Vb.mk iv1 l1] (Exp.sequence
+              (efor iv2 f2 false p2 (efor iv3 f3 false p3 body_exp))
+              (efor iv1 f1 false p1 (efor iv2 f2 false p2 (efor iv3 f3 false p3 body_exp))))
+    end else begin
+      match layout with
+      | L.F -> efor iv3 f3 upto l3 (efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body_exp))
+      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 (efor iv3 f3 upto l3 body_exp))
+    end
+
+end (* A3d *)
+
+module Make (D : Dimension_dependent) = struct
+
+  let create ~open_ ~variable ~kind ~layout ~size exp =
+    Exp.let_ Nonrecursive
+      [ Vb.mk (Pat.var (to_str variable))
+          (Exp.apply (ex_id (D.opened ~open_ "create"))
+            (unlabeled (kind :: layout :: size)))]
+      exp
+
+  let get ~open_ arr ~index =
+    Exp.apply (ex_id (D.opened ~open_ "unsafe_get"))
+      (unlabeled (ex_id arr :: D.ie_to_elist index))
+
+  let set ~open_ arr ~index new_value_ex =
+    Exp.apply (ex_id (D.opened ~open_ "unsafe_set"))
+      (unlabeled (ex_id arr :: (D.ie_to_elist index) @ [new_value_ex]))
+
+  module Single = struct
+
+    module Body = struct                             (* Ie. Function body terms *)
+
+      open Common_config
+
+      let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index arr =
+        let arg_list =
+          if with_index then
+            if upto then
+              (lookup_ref ref_) :: (D.ie_to_elist index) @ [get ~open_ arr ~index]
+            else
+              (D.ie_to_elist index) @ [get ~open_ arr ~index] @ [lookup_ref ref_]
           else
-            [ index_ex; get ~open_ arr index_ex; lookup_ref ref_]
-        else
-          if upto then
-            [ lookup_ref ref_; get ~open_ arr index_ex]
-          else
-            [ get ~open_ arr index_ex; lookup_ref ref_]
-      in
-      apply lambda arg_list
+            if upto then
+              (lookup_ref ref_) :: [get ~open_ arr ~index]
+            else
+              (get ~open_ arr ~index) :: [lookup_ref ref_]
+        in
+        apply lambda arg_list
 
-    (* TODO:
-    * Generalize the variable naming mechanism, such that if a user passes an
-    * initialial value as 'r' or an function as 'i' (for example), this will
-    * still compile.
-    * *)
-    let fold_body ?(arr_arg="a") ?(ref_="r") ?(index="i") c
-        ~upto ~start ~mo init =
-      let start_exp = Exp.constant (const_int start) in
-      let end_exp = length_expr ~open_:c.open_ ~mo arr_arg in
-      make_ref ref_ init
-        (Exp.sequence
-          (make_for_loop index ~start_exp ~end_exp upto
-            (assign_ref ref_
-              (fold_apply_f c ~upto ~ref_ ~index arr_arg)))
-          (lookup_ref ref_))
+      let fold ?(arr_arg="a") ?(ref_="r") c ~upto layout init =
+        let index    = D.init_ir in
+        let index_ie = D.ie_of_ir index in
+        let open_    = c.open_ in
+        make_ref ref_ init
+          (Exp.sequence
+            (D.make_for_loop index ~open_ ~skip_first:false ~upto layout arr_arg
+              (assign_ref ref_ (fold_apply_f c ~upto ~ref_ ~index:index_ie arr_arg)))
+            (lookup_ref ref_))
 
-    let reduce_body ?(arr_arg="a") ?(ref_="r") ?(index="i") c
-        ~upto ~start ~mo =
-      let first_index, start_exp, end_exp, dir =
-        let li = length_expr ~open_:c.open_ ~mo arr_arg in
-        let fi = Exp.constant (const_int start) in
-        if upto then
-          fi
-          , Exp.constant (const_int (start + 1))
-          , li
-          , Upto
-        else
-          li
-          , (mo_expr ~mo:true li)
-          , fi
-          , Downto
-      in
-      make_ref ref_ (get ~open_:c.open_ arr_arg first_index)
-        (Exp.sequence
-          (Exp.for_ (Pat.var (to_str index)) start_exp end_exp dir
-            (assign_ref ref_
-              (fold_apply_f c ~upto ~ref_ ~index arr_arg)))
-          (lookup_ref ref_))
+      let reduce ?(arr_arg="a") ?(ref_="r") c ~upto layout =
+        let index    = D.init_ir  in
+        let index_ie = D.ie_of_ir index in
+        let open_    = c.open_ in
+        make_ref ref_ (get ~open_ arr_arg ~index:(D.first layout))
+          (Exp.sequence
+             (D.make_for_loop index ~open_ ~skip_first:true ~upto layout arr_arg
+              (assign_ref ref_ (fold_apply_f c ~upto ~ref_ ~index:index_ie arr_arg)))
+            (lookup_ref ref_))
 
-    let iter ?(arr_arg="a") ?(index="i")
-      { open_; with_index; lambda } ~upto ~modify ~start ~mo =
-      let index_ex = ex_id index in
-      let inside_ex =
+      let iter_apply_f { open_; with_index; lambda } ~modify arr_arg index =
         if modify then
           let new_value_exp =
             if with_index then
-              apply lambda [index_ex; get ~open_ arr_arg index_ex]
+              apply lambda ((D.ie_to_elist index) @ [get ~open_ arr_arg ~index])
             else
-              apply lambda [get ~open_ arr_arg index_ex]
-          in
-          set ~open_ arr_arg index_ex new_value_exp
+              apply lambda [get ~open_ arr_arg ~index]
+            in
+            set ~open_ arr_arg ~index new_value_exp
         else
           let_unit
             (if with_index then
-              apply lambda [index_ex; get ~open_ arr_arg index_ex]
+              apply lambda ((D.ie_to_elist index) @ [get ~open_ arr_arg ~index])
             else
-              apply lambda [get ~open_ arr_arg index_ex])
-      in
-      make_for_loop index
-        ~start_exp:(Exp.constant (const_int start))
-        ~end_exp:(length_expr ~open_ ~mo arr_arg)
-        upto
-        inside_ex
+              apply lambda [get ~open_ arr_arg ~index])
 
-  end (* Body *)
+      let iter ?(arr_arg="a") c ~modify layout =
+        let index    = D.init_ir  in
+        let index_ie = D.ie_of_ir index in
+        let open_    = c.open_ in
+        let inside_ex = iter_apply_f c ~modify arr_arg index_ie in
+        D.make_for_loop index ~open_ ~skip_first:false ~upto:true
+          layout arr_arg inside_ex
 
-  module Operation = struct
+    end (* Body *)
 
-    type 'a t =
-      (* 'acc -> 'a -> 'acc *)
-      | Fold of { config  : 'a Common_config.t
-                ; left    : bool                    (* fold_ left or right? *)
-                ; init    : 'a                (*Parsetree.expression option *)
-                }
+    module Operation = struct
 
-      | Reduce of { config  : 'a Common_config.t
-                  ; left    : bool                 (* reduce left or right? *)
+      type 'a t =
+        (* 'acc -> 'a -> 'acc *)
+        | Fold of { config  : 'a Common_config.t
+                  ; left    : bool                    (* fold_ left or right? *)
+                  ; init    : 'a                (*Parsetree.expression option *)
                   }
 
-      (* 'a -> unit *)
-      | Iter of { config  : 'a Common_config.t
-                ; modify  : bool
-                (* Assign the value back to position. *)
-                }
+        | Reduce of { config  : 'a Common_config.t
+                    ; left    : bool                 (* reduce left or right? *)
+                    }
 
-    let fr_to_name f_o_r with_index left =
-      sprintf "%s%s_%s"
-        f_o_r
-        (if with_index then "i" else "")
-        (if left then "left" else "right")
+        (* 'a -> unit *)
+        | Iter of { config  : 'a Common_config.t
+                  ; modify  : bool
+                  (* Assign the value back to position. *)
+                  }
 
-    let addi name = function
-      | true  -> name ^ "i"
-      | false -> name
+      let fr_to_name f_o_r with_index left =
+        sprintf "%s%s_%s"
+          f_o_r
+          (if with_index then "i" else "")
+          (if left then "left" else "right")
 
-    let to_name = function
-      | Iter { modify = false; config } -> addi "iter" config.with_index
-      | Iter { modify = true;  config } -> addi "modify" config.with_index
-      | Fold { config; left }           -> fr_to_name "fold" config.with_index left
-      | Reduce { config; left }         -> fr_to_name "reduce" config.with_index left
+      let addi name = function
+        | true  -> name ^ "i"
+        | false -> name
 
-    let to_body = function
-      | Iter { config; modify }    -> Body.iter config ~upto:true ~modify
-      | Fold { config; left; init} -> Body.fold_body config ~upto:left init
-      | Reduce { config; left }    -> Body.reduce_body config ~upto:left
+      let to_name = function
+        | Iter { modify = false; config } -> addi "iter" config.with_index
+        | Iter { modify = true;  config } -> addi "modify" config.with_index
+        | Fold { config; left }           -> fr_to_name "fold" config.with_index left
+        | Reduce { config; left }         -> fr_to_name "reduce" config.with_index left
 
-    let open_ = function
-      | Iter { config } | Fold { config } | Reduce { config }-> config.open_
+      let to_body layout = function
+        | Iter { config; modify }    -> Body.iter config ~modify layout
+        | Fold { config; left; init} -> Body.fold config ~upto:left layout init
+        | Reduce { config; left }    -> Body.reduce config ~upto:left layout
 
-  end (* Operation *)
+      let open_ = function
+        | Iter { config } | Fold { config } | Reduce { config }-> config.open_
 
-  (* Create a fast iter/fold using a reference and for-loop. *)
-  module Create = struct
+    end (* Operation *)
 
-    let make_let ?layout ?(arg="a") ?(layout_arg="l") ~open_ kind let_name
-        expression application_expression =
-      let to_body array_layout =
-        Exp.fun_ Nolabel None (constrain_vec ~open_ kind array_layout arg)
-          expression
-      in
-      let body =
-        match layout with
-        | None    -> Exp.newtype layout_arg (to_body layout_arg)
-        | Some ls -> to_body ls
-      in
-      Exp.let_ Nonrecursive [ Vb.mk (Pat.var (to_str let_name)) body]
-        application_expression
+    (* Create a fast iter/fold using a reference and for-loop. *)
+    module Create = struct
 
-    let layout_specific_without_app kind op layout app =
-      let lsfo = L.to_fold_params layout in
-      let name = Operation.to_name op ^ L.to_name_suffix layout in
-      let open_ = Operation.open_ op in
-      let body = Operation.to_body op in
-      make_let ~layout:lsfo.constraint_name ~open_ kind name
-        (body ~start:lsfo.start_index ~mo:lsfo.minus_one)
-        (app name)
-
-    let layout_specific kind op arr layout =
-      layout_specific_without_app kind op layout
-        (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
-
-    let layout_agnostic kind op arr =
-      let name = Operation.to_name op in
-      let open_ = Operation.open_ op in
-      (* This variable renaming isn't necessary, it just makes the code, as output
-      * -dsource, eaiser to read. *)
-      let arg = "b" in
-      let arg_ex = [Nolabel, ex_id arg] in
-      make_let ~arg ~open_ kind name
-        (layout_specific_without_app kind op (L Fortran_layout)
-          (fun name_f ->
-            layout_specific_without_app kind op (L C_layout)
-              (fun name_c ->
-                 Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg_ex)
-                  [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                      (Exp.apply (ex_id name_f) arg_ex)
-                  ; Exp.case (Pat.construct (lid "C_layout") None)
-                      (Exp.apply (ex_id name_c) arg_ex)])))
-        (Exp.apply (ex_id name) [ Nolabel, arr])
-
-  end (* Create *)
-
-  module Parse = struct
-
-    let to_fs = function | true -> "fold_left" | false -> "fold_right"
-
-    let fold_args_unlabled loc c left lst =
-      let n = List.length lst in
-      if n < 3 then
-        location_error ~loc "Missing %s arguments." (to_fs left)
-      else if n > 3 then
-        location_error ~loc "Too many arguments to %s." (to_fs left)
-      else
-        match lst with
-        | [ Nolabel, lambda; Nolabel, init; Nolabel, v ] ->
-            let config = Cc.overwrite_lambda c lambda in
-            Operation.Fold { config; left; init = init }, v
-        | _ ->
-          location_error ~loc "Missing labeled f argument to %s." (to_fs left)
-
-    let fold loc c left lst =
-      match remove_and_assoc (Labelled "f") lst with
-      | lambda, lst ->
-          begin match remove_and_assoc (Labelled "init") lst with
-          | init, lst ->
-              begin match remove_and_assoc Nolabel lst with
-              | v, [] -> let config = Cc.overwrite_lambda c lambda in
-                         Operation.Fold { config ; left; init = init}, v
-              | v, ls -> location_error ~loc "Extra arguments to %s."
-                          (to_fs left)
-              | exception Not_found ->
-                  location_error ~loc "Missing unlabeled array1 argument to %s."
-                    (to_fs left)
-              end
-          | exception Not_found ->
-              location_error ~loc "Missing labeled init argument to %s." (to_fs left)
-          end
-      | exception Not_found ->
-          fold_args_unlabled loc c left lst
-
-    let initless loc lst funs k =
-      match remove_and_assoc (Labelled "f") lst with
-      | f, lst ->
-          begin match remove_and_assoc Nolabel lst with
-          | v, [] -> k f v
-          | v, ls -> location_error ~loc "Extra arguments to %s." funs
-          | exception Not_found ->
-              location_error ~loc "Missing unlabeled array1 argument to %s." funs
-          end
-      | exception Not_found  ->
-          let n = List.length lst in
-          if n < 2 then
-            location_error ~loc "Missing %s arguments" funs
-          else if n > 2 then
-            location_error ~loc "Too many argument to %s" funs
-          else
-            begin match lst with
-            | [ Nolabel, f
-              ; Nolabel, v
-              ] -> k f v
-            | _ ->
-              location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
-            end
-
-    let iter loc c modify lst =
-      initless loc lst "iter"
-        (fun lambda v ->
-          let config = Cc.overwrite_lambda c lambda in
-          Operation.Iter { config; modify }, v)
-
-    let reduce loc c left lst =
-      initless loc lst "reduce"
-        (fun lambda v ->
-          let config = Cc.overwrite_lambda c lambda in
-          Operation.Reduce { config; left }, v)
-
-    let op_and_payload ~loc ~open_ = function
-      | [ { pstr_desc =
-            Pstr_eval
-              ( { pexp_desc =
-                  Pexp_apply ({pexp_desc =
-                    Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
-          begin match f with
-          | "fold_left"     ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
-          | "fold_right"    ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
-          | "foldi_left"    ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
-          | "foldi_right"   ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
-          | "reduce_left"   ->
-              Ok (reduce loc (Cc.init ~open_ ~with_index:false) true args)
-          | "reduce_right"  ->
-              Ok (reduce loc (Cc.init ~open_ ~with_index:false) false args)
-          | "reducei_left"  ->
-              Ok (reduce loc (Cc.init ~open_ ~with_index:true) true args)
-          | "reducei_right" ->
-              Ok (reduce loc (Cc.init ~open_ ~with_index:true) false args)
-          | "iter"          ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:false) false args)
-          | "iteri"         ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:true) false args)
-          | "modify"        ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:false) true args)
-          | "modifyi"       ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:true) true args)
-          | s               ->
-              Error s
-          end
-      | [] -> location_error ~loc "Missing fold, reduce, iter or modify invocation."
-      | _  -> location_error ~loc "Incorrect fold, reduce, iter or modify invocation."
-
-  end (* Parse *)
-
-  let maybe ~open_ ~loc r p =
-    match Parse.op_and_payload ~open_ ~loc p with
-    | Error s         -> Error s
-    | Ok (op, arr1) ->
-        let rec has_kind = function
-          | []        -> location_error ~loc "Missing kind string"
-          | kstr :: t -> let kind = Common_parse.kind ~loc kstr in
-                         is_layout kind t
-        and is_layout kind = function
-          | []             -> execute_op kind op arr1 None
-          | lstr :: []     -> let layout = Common_parse.layout ~loc lstr in
-                              execute_op kind op arr1 (Some layout)
-          | lstr :: l :: _ -> location_error ~loc "Errant string %s after layout." l
-        and execute_op ?layout kind op arr1 = function
-          | None   -> Create.layout_agnostic kind op arr1
-          | Some l -> Create.layout_specific kind op arr1 l
+      let make_let ?layout ?(arg="a") ?(layout_arg="l") ~open_ kind let_name
+          expression application_expression =
+        let to_body array_layout =
+          let t = D.opened "t" ~open_ in
+          Exp.fun_ Nolabel None (constrain_vec t kind array_layout arg)
+            expression
         in
-        Ok (has_kind r)   (* Fail via exceptions. *)
-
-end (* Single *)
-
-module Double = struct
-
-  (* Unlike the single case we won't support reduce2,
-   * do we reduce to the first or second type? *)
-
-  module Body = struct
-
-    open Common_config
-
-    let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index
-        arr1 arr2 ~index_offset =
-      let index1_ex = ex_id index in
-      let offset2_ex = index_offset_to_offset_index index1_ex index_offset in
-      let arg_list =
-        if with_index then
-          if upto then
-              [ lookup_ref ref_
-              ; index1_ex
-              ; get ~open_ arr1 index1_ex
-              ; get ~open_ arr2 offset2_ex
-              ]
-          else
-              [ index1_ex
-              ; get ~open_ arr1 index1_ex
-              ; get ~open_ arr2 offset2_ex
-              ; lookup_ref ref_
-              ]
-        else
-          if upto then
-            [ lookup_ref ref_
-            ; get ~open_ arr1 index1_ex
-            ; get ~open_ arr2 offset2_ex
-            ]
-          else
-            [ get ~open_ arr1 index1_ex
-            ; get ~open_ arr2 offset2_ex
-            ; lookup_ref ref_
-            ]
-      in
-      apply lambda arg_list
-
-    let fold ?(arr_arg1="a") ?(arr_arg2="b") ?(ref_="r") ?(index="i")
-      c ~upto init ~start ~mo ~index_offset =
-      let start_exp = Exp.constant (const_int start) in
-      let end_exp = length_expr ~open_:c.open_ ~mo arr_arg1 in
-      let inside_ex = assign_ref ref_
-        (fold_apply_f c ~upto ~ref_ ~index ~index_offset arr_arg1 arr_arg2)
-      in
-      make_ref ref_ init
-        (Exp.sequence
-           (make_for_loop index ~start_exp ~end_exp upto inside_ex)
-           (lookup_ref ref_))
-
-    let iter ?(arr_arg1="a") ?(arr_arg2="b") ?(index="i")
-      { open_; with_index; lambda } ~upto ~start ~mo ~index_offset =
-      let start_exp = Exp.constant (const_int start) in
-      let end_exp = length_expr ~open_ ~mo arr_arg1 in
-      let index1_ex = ex_id index in
-      let offset2_ex = index_offset_to_offset_index index1_ex index_offset in
-      let inside_ex =
-        let gets =
-          [get ~open_ arr_arg1 index1_ex ; get ~open_ arr_arg2 offset2_ex ]
+        let body =
+          match layout with
+          | None    -> Exp.newtype layout_arg (to_body layout_arg)
+          | Some ls -> to_body ls
         in
-        let arg_list =
-          if with_index then
-            index1_ex :: gets
-          else
-            gets
-        in
-        let_unit (apply lambda arg_list)
-      in
-      make_for_loop index ~start_exp ~end_exp upto inside_ex
+        Exp.let_ Nonrecursive [ Vb.mk (Pat.var (to_str let_name)) body]
+          application_expression
 
-    let map ?(arr_arg1="a") ?(arr_arg2="b") ?(index="i")
-      { open_; with_index; lambda } ~upto
-      ~start ~mo
-      ?layout2 target_kind =
-      let size_ex = dim_expr ~open_ arr_arg1 in
-      let start_exp = Exp.constant (const_int start) in
-      let end_exp = length_expr ~open_ ~mo arr_arg1 in
-      let index1_ex = ex_id index in
-      let offset2_ex, tlayout_ex =
-        match layout2 with
-        | None               ->
-            index1_ex
-            , Exp.apply (ex_id (opened ~open_ "layout")) (unlabeled [ex_id arr_arg1])
-        | Some (target_layout, index_offset) ->
-            let offset2_ex = index_offset_to_offset_index index1_ex index_offset in
-            let lsfo = L.to_fold_params target_layout in
-            offset2_ex, ex_id lsfo.constraint_name
-      in
-      let inside_ex =
-        let arg_list =
-          if with_index then
-            [ index1_ex ; get ~open_ arr_arg1 index1_ex ]
-          else
-            [ get ~open_ arr_arg1 index1_ex ]
-        in
-        set ~open_ arr_arg2 offset2_ex (apply lambda arg_list)
-      in
-      let tkind_ex = ex_id (K.to_string target_kind) in
-      create_array1 ~open_ arr_arg2 tkind_ex tlayout_ex size_ex
-        (Exp.sequence
-           (make_for_loop index ~start_exp ~end_exp upto inside_ex)
-           (ex_id arr_arg2))
+      let layout_specific_without_app kind op layout app =
+        let name = Operation.to_name op ^ L.to_name_suffix layout in
+        let open_ = Operation.open_ op in
+        let body = Operation.to_body layout op in
+        make_let ~layout:(L.constraint_name layout) ~open_ kind name
+          body (app name)
 
-  end (* Body *)
+      let layout_specific kind op arr layout =
+        layout_specific_without_app kind op layout
+          (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
 
-  module Operation = struct
-
-    (* Unlike the single case we'll wrap the Array1's that we're operating
-     * on inside the operation since there is a difference between 1 or 2
-     * actual arrays that we apply to. *)
-    type 'a t =
-      (* 'acc -> 'a -> 'acc *)
-      | Fold of { config  : 'a Common_config.t
-                ; left    : bool                      (* fold_ left or right? *)
-                ; init    : 'a
-                ; arr1    : 'a
-                ; arr2    : 'a
-                }
-      (* 'a -> unit *)
-      | Iter of { config  : 'a Common_config.t
-                ; arr1    : 'a
-                ; arr2    : 'a
-                }
-      (* 'a -> kind *)
-      | Map of { config   : 'a Common_config.t
-               ; arr      : 'a
-               }
-
-    let fold_to_name with_index left =
-      sprintf "fold%s_%s2"
-        (if with_index then "i" else "")
-        (if left then "left" else "right")
-
-    let add_i n c =
-      if c.Cc.with_index then n ^ "i" else n
-
-    let to_name = function
-      | Iter { config }             -> (add_i "iter" config) ^ "2"
-      | Map { config }              -> add_i "map" config
-      | Fold { config; init; left } -> fold_to_name config.with_index left
-
-    let open_ = function
-      | Iter { config } | Map { config } | Fold { config } -> config.Cc.open_
-
-  end (* Operation *)
-
-  module Create = struct
-
-    (* So similar to the one in Single but we need the extra constraint. *)
-    let make_let_single ?layout ?(arg="a") ?(layout_arg="l") ~open_ kind
-        ?constraint_kind
-        let_name expression application_expression =
-      let to_args array_layout =
-        match constraint_kind with
-        | None ->
-            Exp.fun_ Nolabel None (constrain_vec ~open_ kind array_layout arg)
-              expression
-        | Some k ->
-            let t1, t2 = K.to_constraint_types k in
-            let econstr s = Typ.constr (lid s) [] in
-            let ct = Typ.constr (lid (opened ~open_ "t"))
-                [ econstr t1; econstr t2; econstr array_layout]
-            in
-            Exp.fun_ Nolabel None (constrain_vec ~open_ kind array_layout arg)
-               (Exp.constraint_ expression ct)
-      in
-      let args =
-        match layout with
-        | None    -> Exp.newtype layout_arg (to_args layout_arg)
-        | Some ls -> to_args ls
-      in
-      let vb_pat = Pat.var (to_str let_name) in
-      Exp.let_ Nonrecursive [ Vb.mk vb_pat args] application_expression
-
-    let make_let_double ?layout
-        ?(arg1="a") ?(arg2="b")
-        ?(layout_arg1="l1") ?(layout_arg2="l2")
-        ~open_
-        kind1 kind2
-        let_name expression application_expression =
-      (* TODO: Check arg1 <> arg2 && layout_arg1 <> layout_arg2 *)
-      let to_body array1_layout array2_layout =
-        let c1 = constrain_vec ~open_ kind1 array1_layout arg1 in
-        let c2 = constrain_vec ~open_ kind2 array2_layout arg2 in
-        Exp.fun_ Nolabel None c1
-          (Exp.fun_ Nolabel None c2 expression)
-      in
-      let body =
-        match layout with
-        | None          -> Exp.newtype layout_arg1
-                            (Exp.newtype layout_arg2
-                              (to_body layout_arg1 layout_arg2))
-        | Some (l1, l2) -> to_body l1 l2
-      in
-      Exp.let_ Nonrecursive [ Vb.mk (Pat.var (to_str let_name)) body]
-        application_expression
-
-   let layout_specific_without_app_map config name_prefix
-       kind1 kind2 layout1 layout2 app =
-      let lsfo1 = L.to_fold_params layout1 in
-      let name =
-        name_prefix
-        ^ L.to_name_suffix layout1
-        ^ L.to_name_suffix layout2
-      in
-      let layout2 = layout2, L.to_index_offsets layout1 layout2 in
-      make_let_single ~layout:lsfo1.constraint_name
-        ~open_:config.Cc.open_ kind1 name
-        (Body.map config ~upto:true kind2 ~layout2
-          ~start:lsfo1.start_index ~mo:lsfo1.minus_one)
-        (app name)
-
-    let layout_specific_without_app_single ~open_ name_prefix
-        kind1 kind2 layout1 layout2
-        to_body app =
-      let lsfo1 = L.to_fold_params layout1 in
-      let lsfo2 = L.to_fold_params layout2 in
-      let index_offset = L.to_index_offsets layout1 layout2 in
-      let name =
-        name_prefix
-        ^ L.to_name_suffix layout1
-        ^ L.to_name_suffix layout2
-      in
-      let layout = lsfo1.constraint_name, lsfo2.constraint_name in
-      make_let_double ~layout ~open_ kind1 kind2 name
-        (to_body ~start:lsfo1.start_index ~mo:lsfo1.minus_one ~index_offset)
-        (app name)
-
-    let layout_specific op kind1 kind2 layout1 layout2 =
-      match op with
-      | Operation.Map { config; arr } ->
-          layout_specific_without_app_map config "map"
-            kind1 kind2 layout1 layout2
-            (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
-      | Operation.Iter { config; arr1; arr2 } ->
-          layout_specific_without_app_single ~open_:config.open_ "iter"
-            kind1 kind2 layout1 layout2
-            (Body.iter config ~upto:true)
-            (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
-      | Operation.Fold { config; left; init; arr1; arr2 } ->
-          layout_specific_without_app_single ~open_:config.open_
-            (Operation.fold_to_name config.with_index left)
-            kind1 kind2 layout1 layout2
-            (Body.fold config ~upto:left init)
-            (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
-
-    let layout_agnostic op kind1 kind2 =
-      let name = Operation.to_name op in
-      let open_ = Operation.open_ op in
-      (* Layout agnostic has different meanings for Map vs Iter/Fold.*)
-      match op with
-      | Operation.Map { config ; arr} ->
-        let lswm = layout_specific_without_app_map config "map" in
-        (* We don't know the target arrays layout, so use the same as the
-         * source array. *)
+      let layout_agnostic kind op arr =
+        let name = Operation.to_name op in
+        let open_ = Operation.open_ op in
+        (* This variable renaming isn't necessary, it just makes the code, as output
+        * -dsource, eaiser to read. *)
         let arg = "b" in
         let arg_ex = [Nolabel, ex_id arg] in
-        make_let_single ~arg ~open_ kind1 name ~constraint_kind:kind2
-          (lswm kind1 kind2 (L Fortran_layout) (L Fortran_layout)
-          (fun name_f_f ->
-          (lswm kind1 kind2 (L C_layout)       (L C_layout)
-          (fun name_c_c ->
-          Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg_ex)
-              [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                  (Exp.apply (ex_id name_f_f) arg_ex)
-              ; Exp.case (Pat.construct (lid "C_layout") None)
-                  (Exp.apply (ex_id name_c_c) arg_ex)
-              ]))))
-          (Exp.apply (ex_id name) (unlabeled [arr]))
+        make_let ~arg ~open_ kind name
+          (layout_specific_without_app kind op (L.F)
+            (fun name_f ->
+              layout_specific_without_app kind op (L.C)
+                (fun name_c ->
+                  Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg_ex)
+                    [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                        (Exp.apply (ex_id name_f) arg_ex)
+                    ; Exp.case (Pat.construct (lid "C_layout") None)
+                        (Exp.apply (ex_id name_c) arg_ex)])))
+          (Exp.apply (ex_id name) [ Nolabel, arr])
 
-      | Operation.Iter { config; arr1; arr2 } ->
-        let lswa k1 k2 l1 l2 =
-          layout_specific_without_app_single ~open_:config.open_ "iter2"
-            k1 k2 l1 l2
-            (Body.iter config ~upto:true)
-        in
-        let arg1 = "c" in
-        let arg2 = "d" in
-        let arg1_ex = [Nolabel, ex_id arg1] in
-        let arg2_ex = [Nolabel, ex_id arg2] in
-        let args_ex = arg1_ex @ arg2_ex in
-        make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
-          (lswa kind1 kind2 (L Fortran_layout) (L Fortran_layout)
-          (fun name_f_f ->
-          (lswa kind1 kind2 (L Fortran_layout) (L C_layout)
-          (fun name_f_c ->
-          (lswa kind1 kind2 (L C_layout)       (L Fortran_layout)
-          (fun name_c_f ->
-          (lswa kind1 kind2 (L C_layout)       (L C_layout)
-          (fun name_c_c ->
-            Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg1_ex)
-              [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                  (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg2_ex)
-                      [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                          (Exp.apply (ex_id name_f_f) args_ex)
-                      ; Exp.case (Pat.construct (lid "C_layout") None)
-                          (Exp.apply (ex_id name_f_c) args_ex)])
-              ; Exp.case (Pat.construct (lid "C_layout") None)
-                  (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg2_ex)
-                      [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                          (Exp.apply (ex_id name_c_f) args_ex)
-                      ; Exp.case (Pat.construct (lid "C_layout") None)
-                          (Exp.apply (ex_id name_c_c) args_ex)])
-              ]))))))))
-          (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+    end (* Create *)
 
-      | Operation.Fold { config; left; init; arr1; arr2 } ->
-        let lswa k1 k2 l1 l2 =
-          layout_specific_without_app_single ~open_:config.open_
-            (Operation.fold_to_name config.with_index left)
-            k1 k2 l1 l2
-            (Body.fold config ~upto:left init)
-        in
-        let arg1 = "c" in
-        let arg2 = "d" in
-        let arg1_ex = [Nolabel, ex_id arg1] in
-        let arg2_ex = [Nolabel, ex_id arg2] in
-        let args_ex = arg1_ex @ arg2_ex in
-        make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
-          (lswa kind1 kind2 (L Fortran_layout) (L Fortran_layout)
-          (fun name_f_f ->
-          (lswa kind1 kind2 (L Fortran_layout) (L C_layout)
-          (fun name_f_c ->
-          (lswa kind1 kind2 (L C_layout)       (L Fortran_layout)
-          (fun name_c_f ->
-          (lswa kind1 kind2 (L C_layout)       (L C_layout)
-          (fun name_c_c ->
-            Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg1_ex)
-              [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                  (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg2_ex)
-                      [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                          (Exp.apply (ex_id name_f_f) args_ex)
-                      ; Exp.case (Pat.construct (lid "C_layout") None)
-                          (Exp.apply (ex_id name_f_c) args_ex)])
-              ; Exp.case (Pat.construct (lid "C_layout") None)
-                  (Exp.match_ (Exp.apply (ex_id (opened ~open_ "layout")) arg2_ex)
-                      [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                          (Exp.apply (ex_id name_c_f) args_ex)
-                      ; Exp.case (Pat.construct (lid "C_layout") None)
-                          (Exp.apply (ex_id name_c_c) args_ex)])
-              ]))))))))
-          (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+    module Parse = struct
 
-  end (* Create *)
+      let to_fs = function | true -> "fold_left" | false -> "fold_right"
 
-  module Parse = struct
+      let fold_args_unlabled loc c left lst =
+        let n = List.length lst in
+        if n < 3 then
+          location_error ~loc "Missing %s arguments." (to_fs left)
+        else if n > 3 then
+          location_error ~loc "Too many arguments to %s." (to_fs left)
+        else
+          match lst with
+          | [ Nolabel, lambda; Nolabel, init; Nolabel, v ] ->
+              let config = Cc.overwrite_lambda c lambda in
+              Operation.Fold { config; left; init = init }, v
+          | _ ->
+            location_error ~loc "Missing labeled f argument to %s." (to_fs left)
 
-    let to_fs = function
-      | true -> "fold_left2"
-      | false -> "fold_right2"
-
-    let fold_args_unlabled loc c left lst =
-      let n = List.length lst in
-      if n < 4 then
-        location_error ~loc "Missing %s arguments." (to_fs left)
-      else if n > 4 then
-        location_error ~loc "Too many arguments to %s." (to_fs left)
-      else
-        match lst with
-        | [ Nolabel, lambda; Nolabel, init; Nolabel, arr1; Nolabel, arr2 ] ->
-            let config = Cc.overwrite_lambda c lambda in
-            Operation.Fold { config; left; init; arr1; arr2}
-        | _ ->
-          location_error ~loc "Missing labeled f argument to %s." (to_fs left)
-
-    let fold loc c left lst =
-      match remove_and_assoc (Labelled "f") lst with
-      | lambda, lst ->
-          begin match remove_and_assoc (Labelled "init") lst with
-          | init, lst ->
-              begin match remove_and_assoc Nolabel lst with
-              | arr1, lst ->
-                  begin match remove_and_assoc Nolabel lst with
-                  | arr2, [] ->
-                      let config = Cc.overwrite_lambda c lambda in
-                      Operation.Fold { config; left; init; arr1; arr2}
-                  | _, ls ->
-                      location_error ~loc "Extra arguments to %s." (to_fs left)
-                  | exception Not_found ->
-                      location_error ~loc "Missing unlabeled array1 argument to %s."
-                        (to_fs left)
-                  end
-              | exception Not_found ->
+      let fold loc c left lst =
+        match remove_and_assoc (Labelled "f") lst with
+        | lambda, lst ->
+            begin match remove_and_assoc (Labelled "init") lst with
+            | init, lst ->
+                begin match remove_and_assoc Nolabel lst with
+                | v, [] -> let config = Cc.overwrite_lambda c lambda in
+                          Operation.Fold { config ; left; init = init}, v
+                | v, ls -> location_error ~loc "Extra arguments to %s."
+                            (to_fs left)
+                | exception Not_found ->
                     location_error ~loc "Missing unlabeled array1 argument to %s."
                       (to_fs left)
-              end
-          | exception Not_found ->
-              location_error ~loc "Missing labeled init argument to %s." (to_fs left)
-          end
-      | exception Not_found ->
-          fold_args_unlabled loc c left lst
-
-    let iter loc c lst =
-      match remove_and_assoc (Labelled "f") lst with
-      | lambda, lst ->
-          begin match lst with
-          | [ Nolabel, arr1; Nolabel, arr2 ] ->
-              let config = Cc.overwrite_lambda c lambda in
-              Operation.Iter { config; arr1; arr2}
-          | _ -> location_error ~loc "Missing unlabeled arguments to iter2."
-          end
-      | exception Not_found  ->
-          let n = List.length lst in
-          if n < 3 then
-            location_error ~loc "Missing iter2 arguments"
-          else if n > 3 then
-            location_error ~loc "Too many argument to iter2"
-          else
-            begin match lst with
-            | [ Nolabel, lambda; Nolabel, arr1; Nolabel, arr2 ] ->
-              let config = Cc.overwrite_lambda c lambda in
-              Operation.Iter { config; arr1; arr2}
-            | _ ->
-              location_error ~loc "Missing unlabeled \"f\" argument to iter2."
+                end
+            | exception Not_found ->
+                location_error ~loc "Missing labeled init argument to %s." (to_fs left)
             end
+        | exception Not_found ->
+            fold_args_unlabled loc c left lst
 
-    let map loc c lst =
-      match remove_and_assoc (Labelled "f") lst with
-      | lambda, lst ->
-          begin match lst with
-          | [ Nolabel, arr ] ->
-              let config = Cc.overwrite_lambda c lambda in
-              Operation.Map { config; arr}
-          | _ -> location_error ~loc "Missing unlabeled arguments to map."
-          end
-      | exception Not_found  ->
-          let n = List.length lst in
-          if n < 2 then
-            location_error ~loc "Missing map arguments"
-          else if n > 2 then
-            location_error ~loc "Too many argument to map" iter
-          else
-            begin match lst with
-            | [ Nolabel, lambda; Nolabel, arr ] ->
-              let config = Cc.overwrite_lambda c lambda in
-              Operation.Map { config; arr}
-            | _ ->
-              location_error ~loc "Missing unlabeled \"f\" argument to map."
+      let initless loc lst funs k =
+        match remove_and_assoc (Labelled "f") lst with
+        | f, lst ->
+            begin match remove_and_assoc Nolabel lst with
+            | v, [] -> k f v
+            | v, ls -> location_error ~loc "Extra arguments to %s." funs
+            | exception Not_found ->
+                location_error ~loc "Missing unlabeled array1 argument to %s." funs
             end
-
-    let op_and_payload ~loc ~open_ = function
-      | [ { pstr_desc =
-            Pstr_eval
-              ( { pexp_desc =
-                  Pexp_apply ({pexp_desc =
-                    Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
-          begin match f with
-          | "fold_left2"    ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
-          | "fold_right2"   ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
-          | "foldi_left2"   ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
-          | "foldi_right2"  ->
-              Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
-          | "iter2"         ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:false) args)
-          | "iteri2"        ->
-              Ok (iter loc (Cc.init ~open_ ~with_index:true) args)
-          | "map"           ->
-              Ok (map loc (Cc.init ~open_ ~with_index:false) args)
-          | "mapi"          ->
-              Ok (map loc (Cc.init ~open_ ~with_index:true) args)
-          | s               ->
-              Error s
-          end
-      | []         -> location_error ~loc "Missing operation."
-      |  _         -> location_error ~loc "Incorrect invocation."
-
-  end (* Parse *)
-
-  let maybe ~open_ ~loc r p =
-    match Parse.op_and_payload ~open_ ~loc p with
-    | Error s -> Error s
-    | Ok op   ->
-        let rec has_kind = function
-          | []        -> location_error ~loc "Missing kind string."
-          | kstr :: t -> let kind = Common_parse.kind ~loc kstr in
-                         is_layout_or_kind ~kind t
-        and is_layout_or_kind ?kind2 ~kind = function
-          | []         -> l_agnostic ~kind ?kind2 ()
-          | lkstr :: t ->
-              begin match Common_parse.kind_or_layout ~loc lkstr with
-              | `L layout -> another_layout ?kind2 ~kind ~layout t
-              | `K kind2  -> is_layout_or_kind ~kind ~kind2 t
+        | exception Not_found  ->
+            let n = List.length lst in
+            if n < 2 then
+              location_error ~loc "Missing %s arguments" funs
+            else if n > 2 then
+              location_error ~loc "Too many argument to %s" funs
+            else
+              begin match lst with
+              | [ Nolabel, f
+                ; Nolabel, v
+                ] -> k f v
+              | _ ->
+                location_error ~loc "Missing unlabeled \"f\" argument to %s." funs
               end
-        and another_layout ?kind2 ~kind ~layout = function
-          | []         -> l_specific ?kind2 ~kind ~layout ()
-          | lstr :: [] -> let layout2 = Common_parse.layout ~loc lstr in
-                          l_specific ?kind2 ~kind ~layout ~layout2 ()
-          | _ :: s :: _ ->
-            location_error ~loc "Extra argument past last layout and kind: %s" s
-        and l_agnostic ~kind ?kind2 () =
-          begin match kind2 with
-          | None  ->                               (* No layout, no 2nd kind. *)
-              Create.layout_agnostic op kind kind     (* same kind. *)
-          | Some kind2 ->
-              Create.layout_agnostic op kind kind2    (* diff kind. *)
-          end
-        and l_specific ~kind ?kind2 ~layout ?layout2 () =
-          begin match kind2 with
-          | None  ->                                          (* No 2nd kind. *)
-              begin match layout2 with
-              | None ->
-                  Create.layout_specific op
-                        kind kind                               (* same kind. *)
-                        layout layout                         (* same layout. *)
-              | Some layout2 ->
-                  Create.layout_specific op
-                        kind kind                               (* same kind. *)
-                        layout layout2                  (* maybe diff layout. *)
-              end
-          | Some kind2 ->
-              begin match layout2 with
-              | None ->
-                  Create.layout_specific op
-                    kind kind2                            (* maybe diff kind. *)
-                    layout layout                             (* same layout. *)
-              | Some layout2 ->
-                  Create.layout_specific op
-                    kind kind2                            (* maybe diff kind. *)
-                    layout layout2                      (* maybe diff layout. *)
-              end
-          end
+
+      let iter loc c modify lst =
+        initless loc lst "iter"
+          (fun lambda v ->
+            let config = Cc.overwrite_lambda c lambda in
+            Operation.Iter { config; modify }, v)
+
+      let reduce loc c left lst =
+        initless loc lst "reduce"
+          (fun lambda v ->
+            let config = Cc.overwrite_lambda c lambda in
+            Operation.Reduce { config; left }, v)
+
+      let op_and_payload ~loc ~open_ = function
+        | [ { pstr_desc =
+              Pstr_eval
+                ( { pexp_desc =
+                    Pexp_apply ({pexp_desc =
+                      Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
+            begin match f with
+            | "fold_left"     ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
+            | "fold_right"    ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
+            | "foldi_left"    ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
+            | "foldi_right"   ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
+            | "reduce_left"   ->
+                Ok (reduce loc (Cc.init ~open_ ~with_index:false) true args)
+            | "reduce_right"  ->
+                Ok (reduce loc (Cc.init ~open_ ~with_index:false) false args)
+            | "reducei_left"  ->
+                Ok (reduce loc (Cc.init ~open_ ~with_index:true) true args)
+            | "reducei_right" ->
+                Ok (reduce loc (Cc.init ~open_ ~with_index:true) false args)
+            | "iter"          ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:false) false args)
+            | "iteri"         ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:true) false args)
+            | "modify"        ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:false) true args)
+            | "modifyi"       ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:true) true args)
+            | s               ->
+                Error s
+            end
+        | [] -> location_error ~loc "Missing fold, reduce, iter or modify invocation."
+        | _  -> location_error ~loc "Incorrect fold, reduce, iter or modify invocation."
+
+    end (* Parse *)
+
+    let maybe ~open_ ~loc r p =
+      match Parse.op_and_payload ~open_ ~loc p with
+      | Error s         -> Error s
+      | Ok (op, arr1) ->
+          let rec has_kind = function
+            | []        -> location_error ~loc "Missing kind string"
+            | kstr :: t -> let kind = Common_parse.kind ~loc kstr in
+                          is_layout kind t
+          and is_layout kind = function
+            | []             -> execute_op kind op arr1 None
+            | lstr :: []     -> let layout = Common_parse.layout ~loc lstr in
+                                execute_op kind op arr1 (Some layout)
+            | lstr :: l :: _ -> location_error ~loc "Errant string %S after layout." l
+          and execute_op ?layout kind op arr1 = function
+            | None   -> Create.layout_agnostic kind op arr1
+            | Some l -> Create.layout_specific kind op arr1 l
+          in
+          Ok (has_kind r)   (* Fail via exceptions. *)
+
+  end (* Single *)
+
+  module Double = struct
+
+    (* Unlike the single case we won't support reduce2,
+    * do we reduce to the first or second type? *)
+
+    module Body = struct
+
+      open Common_config
+
+      let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index
+          arr1 arr2 io =
+        let arg_list =
+          if with_index then
+            if upto then
+                ( lookup_ref ref_ )
+                :: ( D.ie_to_elist index )
+                @ [ get ~open_ arr1 ~index
+                  ; get ~open_ arr2 ~index:(D.offset index io)
+                  ]
+            else
+                ( D.ie_to_elist index )
+                @ [ get ~open_ arr1 ~index
+                  ; get ~open_ arr2 ~index:(D.offset index io)
+                  ; lookup_ref ref_
+                  ]
+          else
+            if upto then
+              [ lookup_ref ref_
+              ; get ~open_ arr1 ~index
+              ; get ~open_ arr2 ~index:(D.offset index io)
+              ]
+            else
+              [ get ~open_ arr1 ~index
+              ; get ~open_ arr2 ~index:(D.offset index io)
+              ; lookup_ref ref_
+              ]
         in
-        Ok (has_kind r)                               (* Fail via exceptions. *)
+        apply lambda arg_list
 
-end (* Double *)
+      let fold ?(arr_arg1="a") ?(arr_arg2="b") ?(ref_="r")
+        c ~upto layout init ~index_offset =
+        let index    = D.init_ir in
+        let index_ie = D.ie_of_ir index in
+        let open_    = c.open_ in
+        let inside_ex =
+          assign_ref ref_
+            (fold_apply_f c ~upto ~ref_ ~index:index_ie
+              arr_arg1 arr_arg2 index_offset)
+        in
+        make_ref ref_ init
+          (Exp.sequence
+            (D.make_for_loop index ~open_ ~skip_first:false ~upto layout
+            (* We're passing ONLY the first array into the for-loop construction
+             * part, so we'll use it for the sizes, offsets against that index
+             * are determined via index_offset above. But more importantly,
+             * we're NOT checking that the 2 arrays are the same size here. *)
+               arr_arg1 inside_ex)
+            (lookup_ref ref_))
+
+      let iter_apply_f { open_; with_index; lambda } arr1 arr2 index io =
+        let gets =
+          [ get ~open_ arr1 ~index
+          ; get ~open_ arr2 ~index:(D.offset index io)
+          ]
+        in
+        let arg_list =
+          if with_index then (D.ie_to_elist index) @ gets else gets
+        in
+        let_unit (apply lambda arg_list)
+
+      let iter ?(arr_arg1="a") ?(arr_arg2="b") c layout ~index_offset =
+        let index    = D.init_ir in
+        let index_ie = D.ie_of_ir index in
+        let open_    = c.open_ in
+        let inside_ex = iter_apply_f c arr_arg1 arr_arg2 index_ie index_offset in
+        D.make_for_loop index ~open_ ~skip_first:false ~upto:true layout
+          arr_arg1 inside_ex
+
+      let map ?(arr_arg1="a") ?(arr_arg2="b") ?layout2  (* Target layout *)
+        { open_; with_index; lambda } layout target_kind =
+        let index    = D.init_ir in
+        let index_ie = D.ie_of_ir index in
+        let inside_ex, tlayout_ex =
+          let index2_ie, tlayout_ex =
+            match layout2 with
+            | None               ->
+                index_ie
+                , Exp.apply (ex_id (D.opened ~open_ "layout"))
+                    (unlabeled [ex_id arr_arg1])
+            | Some target_layout ->
+                D.offset index_ie (L.to_index_offsets layout target_layout)
+                , ex_id (L.constraint_name target_layout)
+          in
+          let arg_list =
+            if with_index then
+              (D.ie_to_elist index_ie)
+              @ [ get ~open_ arr_arg1 ~index:index_ie ]
+            else
+              [ get ~open_ arr_arg1 ~index:index_ie ]
+          in
+          set ~open_ arr_arg2 ~index:index2_ie (apply lambda arg_list)
+          , tlayout_ex
+        in
+        let tkind_ex = ex_id (K.to_string target_kind) in
+        let size     = D.(dim ~open_ ~variable:arr_arg1 |> ie_to_elist) in
+        create ~open_ ~variable:arr_arg2 ~kind:tkind_ex ~layout:tlayout_ex ~size
+          (Exp.sequence
+            (D.make_for_loop index ~open_ ~skip_first:false ~upto:true
+               layout arr_arg1 inside_ex)
+            (ex_id arr_arg2))
+
+    end (* Body *)
+
+    module Operation = struct
+
+      (* Unlike the single case we'll wrap the Array1's that we're operating
+      * on inside the operation since there is a difference between 1 or 2
+      * actual arrays that we apply to. *)
+      type 'a t =
+        (* 'acc -> 'a -> 'acc *)
+        | Fold of { config  : 'a Common_config.t
+                  ; left    : bool                      (* fold_ left or right? *)
+                  ; init    : 'a
+                  ; arr1    : 'a
+                  ; arr2    : 'a
+                  }
+        (* 'a -> unit *)
+        | Iter of { config  : 'a Common_config.t
+                  ; arr1    : 'a
+                  ; arr2    : 'a
+                  }
+        (* 'a -> kind *)
+        | Map of { config   : 'a Common_config.t
+                 ; arr      : 'a
+                 }
+
+      let fold_to_name with_index left =
+        sprintf "fold%s_%s2"
+          (if with_index then "i" else "")
+          (if left then "left" else "right")
+
+      let add_i n c =
+        if c.Cc.with_index then n ^ "i" else n
+
+      let to_name = function
+        | Iter { config }             -> (add_i "iter" config) ^ "2"
+        | Map { config }              -> add_i "map" config
+        | Fold { config; init; left } -> fold_to_name config.with_index left
+
+      let open_ = function
+        | Iter { config } | Map { config } | Fold { config } -> config.Cc.open_
+
+    end (* Operation *)
+
+    module Create = struct
+
+      (* So similar to the one in Single but we need the extra constraint. *)
+      let make_let_single ?layout ?(arg="a") ?(layout_arg="l") ~open_ kind
+          ?constraint_kind
+          let_name expression application_expression =
+        let t = D.opened "t" ~open_ in
+        let to_args array_layout =
+          match constraint_kind with
+          | None ->
+              Exp.fun_ Nolabel None (constrain_vec t kind array_layout arg)
+                expression
+          | Some k ->
+              let t1, t2 = K.to_constraint_types k in
+              let econstr s = Typ.constr (lid s) [] in
+              let ct = Typ.constr (lid t)
+                  [ econstr t1; econstr t2; econstr array_layout]
+              in
+              Exp.fun_ Nolabel None (constrain_vec t kind array_layout arg)
+                (Exp.constraint_ expression ct)
+        in
+        let args =
+          match layout with
+          | None    -> Exp.newtype layout_arg (to_args layout_arg)
+          | Some ls -> to_args ls
+        in
+        let vb_pat = Pat.var (to_str let_name) in
+        Exp.let_ Nonrecursive [ Vb.mk vb_pat args] application_expression
+
+      let make_let_double ?layout
+          ?(arg1="a") ?(arg2="b")
+          ?(layout_arg1="l1") ?(layout_arg2="l2")
+          ~open_
+          kind1 kind2
+          let_name expression application_expression =
+        let t = D.opened "t" ~open_ in
+        (* TODO: Check arg1 <> arg2 && layout_arg1 <> layout_arg2 *)
+        let to_body array1_layout array2_layout =
+          let c1 = constrain_vec t kind1 array1_layout arg1 in
+          let c2 = constrain_vec t kind2 array2_layout arg2 in
+          Exp.fun_ Nolabel None c1
+            (Exp.fun_ Nolabel None c2 expression)
+        in
+        let body =
+          match layout with
+          | None          -> Exp.newtype layout_arg1
+                              (Exp.newtype layout_arg2
+                                (to_body layout_arg1 layout_arg2))
+          | Some (l1, l2) -> to_body l1 l2
+        in
+        Exp.let_ Nonrecursive [ Vb.mk (Pat.var (to_str let_name)) body]
+          application_expression
+
+      let layout_specific_without_app_map config name_prefix
+        kind1 kind2 layout1 layout2 app =
+        let name =
+          name_prefix
+          ^ L.to_name_suffix layout1
+          ^ L.to_name_suffix layout2
+        in
+        make_let_single ~layout:(L.constraint_name layout1)
+          ~open_:config.Cc.open_ kind1 name
+          (Body.map config layout1 kind2 ~layout2)
+          (app name)
+
+      let layout_specific_without_app_single ~open_ name_prefix
+          kind1 kind2 layout1 layout2
+          to_body app =
+        let index_offset = L.to_index_offsets layout1 layout2 in
+        let name =
+          name_prefix
+          ^ L.to_name_suffix layout1
+          ^ L.to_name_suffix layout2
+        in
+        let layout = L.constraint_name layout1, L.constraint_name layout2 in
+        make_let_double ~layout ~open_ kind1 kind2 name
+          (to_body ~index_offset)
+          (app name)
+
+      let layout_specific op kind1 kind2 layout1 layout2 =
+        match op with
+        | Operation.Map { config; arr } ->
+            layout_specific_without_app_map config "map"
+              kind1 kind2 layout1 layout2
+              (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
+        | Operation.Iter { config; arr1; arr2 } ->
+            layout_specific_without_app_single ~open_:config.open_ "iter"
+              kind1 kind2 layout1 layout2
+              (Body.iter config layout1)
+              (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+        | Operation.Fold { config; left; init; arr1; arr2 } ->
+            layout_specific_without_app_single ~open_:config.open_
+              (Operation.fold_to_name config.with_index left)
+              kind1 kind2 layout1 layout2
+              (Body.fold config ~upto:left layout1 init)
+              (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+
+      let layout_agnostic op kind1 kind2 =
+        let name = Operation.to_name op in
+        let open_ = Operation.open_ op in
+        (* Layout agnostic has different meanings for Map vs Iter/Fold.*)
+        match op with
+        | Operation.Map { config ; arr} ->
+          let lswm = layout_specific_without_app_map config "map" in
+          (* We don't know the target arrays layout, so use the same as the
+          * source array. *)
+          let arg = "b" in
+          let arg_ex = [Nolabel, ex_id arg] in
+          make_let_single ~arg ~open_ kind1 name ~constraint_kind:kind2
+            (lswm kind1 kind2 (L.F) (L.F)
+            (fun name_f_f ->
+            (lswm kind1 kind2 (L.C) (L.C)
+            (fun name_c_c ->
+            Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg_ex)
+                [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                    (Exp.apply (ex_id name_f_f) arg_ex)
+                ; Exp.case (Pat.construct (lid "C_layout") None)
+                    (Exp.apply (ex_id name_c_c) arg_ex)
+                ]))))
+            (Exp.apply (ex_id name) (unlabeled [arr]))
+
+        | Operation.Iter { config; arr1; arr2 } ->
+          let lswa k1 k2 l1 l2 =
+            layout_specific_without_app_single ~open_:config.open_ "iter2"
+              k1 k2 l1 l2
+              (Body.iter config l1)
+          in
+          let arg1 = "c" in
+          let arg2 = "d" in
+          let arg1_ex = [Nolabel, ex_id arg1] in
+          let arg2_ex = [Nolabel, ex_id arg2] in
+          let args_ex = arg1_ex @ arg2_ex in
+          make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
+            (lswa kind1 kind2 L.F L.F
+            (fun name_f_f ->
+            (lswa kind1 kind2 L.F L.C
+            (fun name_f_c ->
+            (lswa kind1 kind2 L.C L.F
+            (fun name_c_f ->
+            (lswa kind1 kind2 L.C L.C
+            (fun name_c_c ->
+              Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg1_ex)
+                [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                        [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                            (Exp.apply (ex_id name_f_f) args_ex)
+                        ; Exp.case (Pat.construct (lid "C_layout") None)
+                            (Exp.apply (ex_id name_f_c) args_ex)])
+                ; Exp.case (Pat.construct (lid "C_layout") None)
+                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                        [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                            (Exp.apply (ex_id name_c_f) args_ex)
+                        ; Exp.case (Pat.construct (lid "C_layout") None)
+                            (Exp.apply (ex_id name_c_c) args_ex)])
+                ]))))))))
+            (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+
+        | Operation.Fold { config; left; init; arr1; arr2 } ->
+          let lswa k1 k2 l1 l2 =
+            layout_specific_without_app_single ~open_:config.open_
+              (Operation.fold_to_name config.with_index left)
+              k1 k2 l1 l2
+              (Body.fold config ~upto:left l1 init)
+          in
+          let arg1 = "c" in
+          let arg2 = "d" in
+          let arg1_ex = [Nolabel, ex_id arg1] in
+          let arg2_ex = [Nolabel, ex_id arg2] in
+          let args_ex = arg1_ex @ arg2_ex in
+          make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
+            (lswa kind1 kind2 L.F L.F
+            (fun name_f_f ->
+            (lswa kind1 kind2 L.F L.C
+            (fun name_f_c ->
+            (lswa kind1 kind2 L.C L.F
+            (fun name_c_f ->
+            (lswa kind1 kind2 L.C L.C
+            (fun name_c_c ->
+              Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg1_ex)
+                [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                        [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                            (Exp.apply (ex_id name_f_f) args_ex)
+                        ; Exp.case (Pat.construct (lid "C_layout") None)
+                            (Exp.apply (ex_id name_f_c) args_ex)])
+                ; Exp.case (Pat.construct (lid "C_layout") None)
+                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                        [ Exp.case (Pat.construct (lid "Fortran_layout") None)
+                            (Exp.apply (ex_id name_c_f) args_ex)
+                        ; Exp.case (Pat.construct (lid "C_layout") None)
+                            (Exp.apply (ex_id name_c_c) args_ex)])
+                ]))))))))
+            (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+
+    end (* Create *)
+
+    module Parse = struct
+
+      let to_fs = function
+        | true -> "fold_left2"
+        | false -> "fold_right2"
+
+      let fold_args_unlabled loc c left lst =
+        let n = List.length lst in
+        if n < 4 then
+          location_error ~loc "Missing %s arguments." (to_fs left)
+        else if n > 4 then
+          location_error ~loc "Too many arguments to %s." (to_fs left)
+        else
+          match lst with
+          | [ Nolabel, lambda; Nolabel, init; Nolabel, arr1; Nolabel, arr2 ] ->
+              let config = Cc.overwrite_lambda c lambda in
+              Operation.Fold { config; left; init; arr1; arr2}
+          | _ ->
+            location_error ~loc "Missing labeled f argument to %s." (to_fs left)
+
+      let fold loc c left lst =
+        match remove_and_assoc (Labelled "f") lst with
+        | lambda, lst ->
+            begin match remove_and_assoc (Labelled "init") lst with
+            | init, lst ->
+                begin match remove_and_assoc Nolabel lst with
+                | arr1, lst ->
+                    begin match remove_and_assoc Nolabel lst with
+                    | arr2, [] ->
+                        let config = Cc.overwrite_lambda c lambda in
+                        Operation.Fold { config; left; init; arr1; arr2}
+                    | _, ls ->
+                        location_error ~loc "Extra arguments to %s." (to_fs left)
+                    | exception Not_found ->
+                        location_error ~loc "Missing unlabeled array1 argument to %s."
+                          (to_fs left)
+                    end
+                | exception Not_found ->
+                      location_error ~loc "Missing unlabeled array1 argument to %s."
+                        (to_fs left)
+                end
+            | exception Not_found ->
+                location_error ~loc "Missing labeled init argument to %s." (to_fs left)
+            end
+        | exception Not_found ->
+            fold_args_unlabled loc c left lst
+
+      let iter loc c lst =
+        match remove_and_assoc (Labelled "f") lst with
+        | lambda, lst ->
+            begin match lst with
+            | [ Nolabel, arr1; Nolabel, arr2 ] ->
+                let config = Cc.overwrite_lambda c lambda in
+                Operation.Iter { config; arr1; arr2}
+            | _ -> location_error ~loc "Missing unlabeled arguments to iter2."
+            end
+        | exception Not_found  ->
+            let n = List.length lst in
+            if n < 3 then
+              location_error ~loc "Missing iter2 arguments"
+            else if n > 3 then
+              location_error ~loc "Too many argument to iter2"
+            else
+              begin match lst with
+              | [ Nolabel, lambda; Nolabel, arr1; Nolabel, arr2 ] ->
+                let config = Cc.overwrite_lambda c lambda in
+                Operation.Iter { config; arr1; arr2}
+              | _ ->
+                location_error ~loc "Missing unlabeled \"f\" argument to iter2."
+              end
+
+      let map loc c lst =
+        match remove_and_assoc (Labelled "f") lst with
+        | lambda, lst ->
+            begin match lst with
+            | [ Nolabel, arr ] ->
+                let config = Cc.overwrite_lambda c lambda in
+                Operation.Map { config; arr}
+            | _ -> location_error ~loc "Missing unlabeled arguments to map."
+            end
+        | exception Not_found  ->
+            let n = List.length lst in
+            if n < 2 then
+              location_error ~loc "Missing map arguments"
+            else if n > 2 then
+              location_error ~loc "Too many argument to map" iter
+            else
+              begin match lst with
+              | [ Nolabel, lambda; Nolabel, arr ] ->
+                let config = Cc.overwrite_lambda c lambda in
+                Operation.Map { config; arr}
+              | _ ->
+                location_error ~loc "Missing unlabeled \"f\" argument to map."
+              end
+
+      let op_and_payload ~loc ~open_ = function
+        | [ { pstr_desc =
+              Pstr_eval
+                ( { pexp_desc =
+                    Pexp_apply ({pexp_desc =
+                      Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
+            begin match f with
+            | "fold_left2"    ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
+            | "fold_right2"   ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
+            | "foldi_left2"   ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
+            | "foldi_right2"  ->
+                Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
+            | "iter2"         ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:false) args)
+            | "iteri2"        ->
+                Ok (iter loc (Cc.init ~open_ ~with_index:true) args)
+            | "map"           ->
+                Ok (map loc (Cc.init ~open_ ~with_index:false) args)
+            | "mapi"          ->
+                Ok (map loc (Cc.init ~open_ ~with_index:true) args)
+            | s               ->
+                Error s
+            end
+        | []         -> location_error ~loc "Missing operation."
+        |  _         -> location_error ~loc "Incorrect invocation."
+
+    end (* Parse *)
+
+    let maybe ~open_ ~loc r p =
+      match Parse.op_and_payload ~open_ ~loc p with
+      | Error s -> Error s
+      | Ok op   ->
+          let rec has_kind = function
+            | []        -> location_error ~loc "Missing kind string."
+            | kstr :: t -> let kind = Common_parse.kind ~loc kstr in
+                          is_layout_or_kind ~kind t
+          and is_layout_or_kind ?kind2 ~kind = function
+            | []         -> l_agnostic ~kind ?kind2 ()
+            | lkstr :: t ->
+                begin match Common_parse.kind_or_layout ~loc lkstr with
+                | `L layout -> another_layout ?kind2 ~kind ~layout t
+                | `K kind2  -> is_layout_or_kind ~kind ~kind2 t
+                end
+          and another_layout ?kind2 ~kind ~layout = function
+            | []         -> l_specific ?kind2 ~kind ~layout ()
+            | lstr :: [] -> let layout2 = Common_parse.layout ~loc lstr in
+                            l_specific ?kind2 ~kind ~layout ~layout2 ()
+            | _ :: s :: _ ->
+              location_error ~loc "Extra argument past last layout and kind: %s" s
+          and l_agnostic ~kind ?kind2 () =
+            begin match kind2 with
+            | None  ->                               (* No layout, no 2nd kind. *)
+                Create.layout_agnostic op kind kind     (* same kind. *)
+            | Some kind2 ->
+                Create.layout_agnostic op kind kind2    (* diff kind. *)
+            end
+          and l_specific ~kind ?kind2 ~layout ?layout2 () =
+            begin match kind2 with
+            | None  ->                                          (* No 2nd kind. *)
+                begin match layout2 with
+                | None ->
+                    Create.layout_specific op
+                          kind kind                               (* same kind. *)
+                          layout layout                         (* same layout. *)
+                | Some layout2 ->
+                    Create.layout_specific op
+                          kind kind                               (* same kind. *)
+                          layout layout2                  (* maybe diff layout. *)
+                end
+            | Some kind2 ->
+                begin match layout2 with
+                | None ->
+                    Create.layout_specific op
+                      kind kind2                            (* maybe diff kind. *)
+                      layout layout                             (* same layout. *)
+                | Some layout2 ->
+                    Create.layout_specific op
+                      kind kind2                            (* maybe diff kind. *)
+                      layout layout2                      (* maybe diff layout. *)
+                end
+            end
+          in
+          Ok (has_kind r)                               (* Fail via exceptions. *)
+
+  end (* Double *)
+
+  let operation ~open_ ~loc t payload =
+    match Single.maybe ~open_ ~loc t payload with
+    | Ok expression -> expression
+    | Error _fn ->
+        begin match Double.maybe ~open_ ~loc t payload with
+        | Ok expression -> expression
+        | Error fn ->
+            location_error ~loc "Unsupported function: %s" fn
+        end
+
+end (* Make *)
+
+module A1 = Make(A1d)
+module A2 = Make(A2d)
+module A3 = Make(A3d)
 
 let transform loc txt payload def =
-  let split =  String.split_on_char '.' txt in
   try
-    let rec is_open = function
-      | "array1" :: t -> operation ~open_:false t
-      | "open1" :: t  -> operation ~open_:true t
-      | _             -> def ()
-    and operation ~open_ t =
-      match Single.maybe ~open_ ~loc t payload with
-      | Ok expression -> expression
-      | Error _fn ->
-          begin match Double.maybe ~open_ ~loc t payload with
-          | Ok expression -> expression
-          | Error fn ->
-              location_error ~loc "Unsupported function: %s" fn
-          end
-    in
-    is_open split
+    match String.split_on_char '.' txt with
+    | "array1" :: t -> A1.operation ~open_:false ~loc t payload
+    | "open1" :: t  -> A1.operation ~open_:true ~loc t payload
+    | "array2" :: t -> A2.operation ~open_:false ~loc t payload
+    | "open2" :: t  -> A2.operation ~open_:true ~loc t payload
+    | "array3" :: t -> A3.operation ~open_:false ~loc t payload
+    | "open3" :: t  -> A3.operation ~open_:true ~loc t payload
+    | _             -> def ()
   with Location.Error e ->
     Exp.extension ~loc (extension_of_error e)
 
