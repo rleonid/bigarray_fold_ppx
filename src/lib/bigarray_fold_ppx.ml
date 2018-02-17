@@ -198,18 +198,24 @@ let let_unit exp =
   Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
     (Exp.construct unit_l None)
 
-type 'a config =
-  { open_ : bool                        (* Is the function invocation in an open
-                                                          (ex. Array1) place? *)
-  ; with_index  : bool            (* Pass the position index to the function? *)
-  ; lambda      : 'a                                 (* The function/lambda . *)
-  }
+module Common_config = struct
 
-let init_config ~open_ ~with_index =
-  { open_; with_index; lambda = () }
+  type 'a t =
+    { open_ : bool                        (* Is the function invocation in an open
+                                                            (ex. Array1) place? *)
+    ; with_index  : bool            (* Pass the position index to the function? *)
+    ; lambda      : 'a                                 (* The function/lambda . *)
+    }
 
-let overwrite_lambda { open_ ; with_index; _ } lambda =
-  { open_; with_index; lambda }
+  let init ~open_ ~with_index =
+    { open_; with_index; lambda = () }
+
+  let overwrite_lambda { open_ ; with_index; _ } lambda =
+    { open_; with_index; lambda }
+
+end (* Common_config *)
+
+module Cc = Common_config
 
 let remove_and_assoc el list =
   let rec loop acc = function
@@ -253,6 +259,8 @@ end (* Common_parse *)
 module Single = struct
 
   module Body = struct                             (* Ie. Function body terms *)
+
+    open Common_config
 
     let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index arr =
       let index_ex = ex_id index in
@@ -340,17 +348,17 @@ module Single = struct
 
     type 'a t =
       (* 'acc -> 'a -> 'acc *)
-      | Fold of { config  : 'a config
+      | Fold of { config  : 'a Common_config.t
                 ; left    : bool                    (* fold_ left or right? *)
                 ; init    : 'a                (*Parsetree.expression option *)
                 }
 
-      | Reduce of { config  : 'a config
+      | Reduce of { config  : 'a Common_config.t
                   ; left    : bool                 (* reduce left or right? *)
                   }
 
       (* 'a -> unit *)
-      | Iter of { config  : 'a config
+      | Iter of { config  : 'a Common_config.t
                 ; modify  : bool
                 (* Assign the value back to position. *)
                 }
@@ -445,7 +453,7 @@ module Single = struct
       else
         match lst with
         | [ Nolabel, lambda; Nolabel, init; Nolabel, v ] ->
-            let config = overwrite_lambda c lambda in
+            let config = Cc.overwrite_lambda c lambda in
             Operation.Fold { config; left; init = init }, v
         | _ ->
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
@@ -456,7 +464,7 @@ module Single = struct
           begin match remove_and_assoc (Labelled "init") lst with
           | init, lst ->
               begin match remove_and_assoc Nolabel lst with
-              | v, [] -> let config = overwrite_lambda c lambda in
+              | v, [] -> let config = Cc.overwrite_lambda c lambda in
                          Operation.Fold { config ; left; init = init}, v
               | v, ls -> location_error ~loc "Extra arguments to %s."
                           (to_fs left)
@@ -497,13 +505,13 @@ module Single = struct
     let iter loc c modify lst =
       initless loc lst "iter"
         (fun lambda v ->
-          let config = overwrite_lambda c lambda in
+          let config = Cc.overwrite_lambda c lambda in
           Operation.Iter { config; modify }, v)
 
     let reduce loc c left lst =
       initless loc lst "reduce"
         (fun lambda v ->
-          let config = overwrite_lambda c lambda in
+          let config = Cc.overwrite_lambda c lambda in
           Operation.Reduce { config; left }, v)
 
     let op_and_payload ~loc ~open_ = function
@@ -514,29 +522,29 @@ module Single = struct
                     Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
           begin match f with
           | "fold_left"     ->
-              Ok (fold loc (init_config ~open_ ~with_index:false) true args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
           | "fold_right"    ->
-              Ok (fold loc (init_config ~open_ ~with_index:false) false args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
           | "foldi_left"    ->
-              Ok (fold loc (init_config ~open_ ~with_index:true) true args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
           | "foldi_right"   ->
-              Ok (fold loc (init_config ~open_ ~with_index:true) false args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
           | "reduce_left"   ->
-              Ok (reduce loc (init_config ~open_ ~with_index:false) true args)
+              Ok (reduce loc (Cc.init ~open_ ~with_index:false) true args)
           | "reduce_right"  ->
-              Ok (reduce loc (init_config ~open_ ~with_index:false) false args)
+              Ok (reduce loc (Cc.init ~open_ ~with_index:false) false args)
           | "reducei_left"  ->
-              Ok (reduce loc (init_config ~open_ ~with_index:true) true args)
+              Ok (reduce loc (Cc.init ~open_ ~with_index:true) true args)
           | "reducei_right" ->
-              Ok (reduce loc (init_config ~open_ ~with_index:true) false args)
+              Ok (reduce loc (Cc.init ~open_ ~with_index:true) false args)
           | "iter"          ->
-              Ok (iter loc (init_config ~open_ ~with_index:false) false args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:false) false args)
           | "iteri"         ->
-              Ok (iter loc (init_config ~open_ ~with_index:true) false args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:true) false args)
           | "modify"        ->
-              Ok (iter loc (init_config ~open_ ~with_index:false) true args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:false) true args)
           | "modifyi"       ->
-              Ok (iter loc (init_config ~open_ ~with_index:true) true args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:true) true args)
           | s               ->
               Error s
           end
@@ -572,6 +580,8 @@ module Double = struct
    * do we reduce to the first or second type? *)
 
   module Body = struct
+
+    open Common_config
 
     let fold_apply_f { open_; with_index; lambda } ~upto ~ref_ ~index
         arr1 arr2 ~index_offset =
@@ -679,19 +689,19 @@ module Double = struct
      * actual arrays that we apply to. *)
     type 'a t =
       (* 'acc -> 'a -> 'acc *)
-      | Fold of { config  : 'a config
+      | Fold of { config  : 'a Common_config.t
                 ; left    : bool                      (* fold_ left or right? *)
                 ; init    : 'a
                 ; arr1    : 'a
                 ; arr2    : 'a
                 }
       (* 'a -> unit *)
-      | Iter of { config  : 'a config
+      | Iter of { config  : 'a Common_config.t
                 ; arr1    : 'a
                 ; arr2    : 'a
                 }
       (* 'a -> kind *)
-      | Map of { config   : 'a config
+      | Map of { config   : 'a Common_config.t
                ; arr      : 'a
                }
 
@@ -701,7 +711,7 @@ module Double = struct
         (if left then "left" else "right")
 
     let add_i n c =
-      if c.with_index then n ^ "i" else n
+      if c.Cc.with_index then n ^ "i" else n
 
     let to_name = function
       | Iter { config }             -> (add_i "iter" config) ^ "2"
@@ -709,7 +719,7 @@ module Double = struct
       | Fold { config; init; left } -> fold_to_name config.with_index left
 
     let open_ = function
-      | Iter { config } | Map { config } | Fold { config } -> config.open_
+      | Iter { config } | Map { config } | Fold { config } -> config.Cc.open_
 
   end (* Operation *)
 
@@ -774,7 +784,7 @@ module Double = struct
       in
       let layout2 = layout2, L.to_index_offsets layout1 layout2 in
       make_let_single ~layout:lsfo1.constraint_name
-        ~open_:config.open_ kind1 name
+        ~open_:config.Cc.open_ kind1 name
         (Body.map config ~upto:true kind2 ~layout2
           ~start:lsfo1.start_index ~mo:lsfo1.minus_one)
         (app name)
@@ -927,7 +937,7 @@ module Double = struct
       else
         match lst with
         | [ Nolabel, lambda; Nolabel, init; Nolabel, arr1; Nolabel, arr2 ] ->
-            let config = overwrite_lambda c lambda in
+            let config = Cc.overwrite_lambda c lambda in
             Operation.Fold { config; left; init; arr1; arr2}
         | _ ->
           location_error ~loc "Missing labeled f argument to %s." (to_fs left)
@@ -941,7 +951,7 @@ module Double = struct
               | arr1, lst ->
                   begin match remove_and_assoc Nolabel lst with
                   | arr2, [] ->
-                      let config = overwrite_lambda c lambda in
+                      let config = Cc.overwrite_lambda c lambda in
                       Operation.Fold { config; left; init; arr1; arr2}
                   | _, ls ->
                       location_error ~loc "Extra arguments to %s." (to_fs left)
@@ -964,7 +974,7 @@ module Double = struct
       | lambda, lst ->
           begin match lst with
           | [ Nolabel, arr1; Nolabel, arr2 ] ->
-              let config = overwrite_lambda c lambda in
+              let config = Cc.overwrite_lambda c lambda in
               Operation.Iter { config; arr1; arr2}
           | _ -> location_error ~loc "Missing unlabeled arguments to iter2."
           end
@@ -977,7 +987,7 @@ module Double = struct
           else
             begin match lst with
             | [ Nolabel, lambda; Nolabel, arr1; Nolabel, arr2 ] ->
-              let config = overwrite_lambda c lambda in
+              let config = Cc.overwrite_lambda c lambda in
               Operation.Iter { config; arr1; arr2}
             | _ ->
               location_error ~loc "Missing unlabeled \"f\" argument to iter2."
@@ -988,7 +998,7 @@ module Double = struct
       | lambda, lst ->
           begin match lst with
           | [ Nolabel, arr ] ->
-              let config = overwrite_lambda c lambda in
+              let config = Cc.overwrite_lambda c lambda in
               Operation.Map { config; arr}
           | _ -> location_error ~loc "Missing unlabeled arguments to map."
           end
@@ -1001,7 +1011,7 @@ module Double = struct
           else
             begin match lst with
             | [ Nolabel, lambda; Nolabel, arr ] ->
-              let config = overwrite_lambda c lambda in
+              let config = Cc.overwrite_lambda c lambda in
               Operation.Map { config; arr}
             | _ ->
               location_error ~loc "Missing unlabeled \"f\" argument to map."
@@ -1015,21 +1025,21 @@ module Double = struct
                     Pexp_ident {txt = Longident.Lident f}}, args)}, _)}] ->
           begin match f with
           | "fold_left2"    ->
-              Ok (fold loc (init_config ~open_ ~with_index:false) true args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:false) true args)
           | "fold_right2"   ->
-              Ok (fold loc (init_config ~open_ ~with_index:false) false args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:false) false args)
           | "foldi_left2"   ->
-              Ok (fold loc (init_config ~open_ ~with_index:true) true args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:true) true args)
           | "foldi_right2"  ->
-              Ok (fold loc (init_config ~open_ ~with_index:true) false args)
+              Ok (fold loc (Cc.init ~open_ ~with_index:true) false args)
           | "iter2"         ->
-              Ok (iter loc (init_config ~open_ ~with_index:false) args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:false) args)
           | "iteri2"        ->
-              Ok (iter loc (init_config ~open_ ~with_index:true) args)
+              Ok (iter loc (Cc.init ~open_ ~with_index:true) args)
           | "map"           ->
-              Ok (map loc (init_config ~open_ ~with_index:false) args)
+              Ok (map loc (Cc.init ~open_ ~with_index:false) args)
           | "mapi"          ->
-              Ok (map loc (init_config ~open_ ~with_index:true) args)
+              Ok (map loc (Cc.init ~open_ ~with_index:true) args)
           | s               ->
               Error s
           end
