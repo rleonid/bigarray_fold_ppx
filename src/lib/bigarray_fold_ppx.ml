@@ -148,11 +148,6 @@ let minus_one exp =
   Exp.apply (ex_id "-")
     (unlabeled [ exp ; Exp.constant (const_int 1) ])
 
-let index_offset_to_offset_index index = function
-  | Aligned -> index
-  | SubOne  -> minus_one index
-  | AddOne  -> plus_one index
-
 let let_unit exp =
   let unit_l = lid "()" in
   Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
