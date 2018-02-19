@@ -63,7 +63,7 @@ The general syntax (for single kind operation) is
 [%bigarraytype.kind(.layout) operation f (init) v]
 ```
 
-  - `bigarraytype` - Currently only supports `array1`
+  - `bigarraytype` - `array1`, `array2` or `array3`.
   - `kind` - One of:
           `float32`
           , `float64`
@@ -104,12 +104,12 @@ The general syntax (for single kind operation) is
       - `modify`        : `(k -> k)`
       - `modifyi`       : `(int -> k -> k)`
 
-    Just like regular `Array` values. These can be applied with a label: `~f`
-    but then `~init` must be labeled as well.
+    Some functions (ex. `iteri`) have more indicies if the bigarraytype is
+    `array2` or `array3`. Just like regular `Array` values. These can be applied
+    with a label (`~f`) but then `init` must be labeled (`~init`) as well.
 
   - `init` the initial value, only for folds.
-  - `v` the `Array1.t`.
-
+  - `v` the `Array1.t`, `Array2.t` or `Array3.t` depending on bigarraytype.
 
 ### Two kind
 
@@ -147,10 +147,10 @@ The general syntax (for single kind operation) is
       - `map`            : `(k1 -> k2)`
       - `mapi`           : `(int -> k1 -> k2)`
 
-    Just like regular `Array` values. These can be applied with a label: `~f`
-    but then `~init` (in the folds) must be labeled as well.
+    Just like regular `Array` values. These can be applied
+    with a label (`~f`) but then `init` must be labeled (`~init`) as well.
 
   - `init` the initial value, only for folds.
-  - `u` an `Array1.t`.
-  - `v` an `Array1.t`.  **Not** an argument to pass to the ppx,
-    but the result of the expression.
+  - `u` an `Array1.t`, `Array2.t` or `Array3.t`.
+  - `v` an `Array1.t`, `Array2.t` or `Array3.t`.  In the case of `map` or `mapi`
+    this is **not** an argument to pass to the ppx, but the result of the expression.
