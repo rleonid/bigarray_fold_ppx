@@ -4,21 +4,6 @@ open Common
 
 (* TODO: Get to the bottom of if the differences are
    just due to comparing left vs right and different roundings.*)
-let d = 1e-6
-let significantly_different_from x y = y < (x -. d) || y > (x +. d )
-let equal_floats x y = not (significantly_different_from x y)
-
-let eq_array arr1 arr2 =
-  Array.fold_left (fun (b, i) v ->
-    b && equal_floats v arr2.(i), i + 1) (true, 0) arr1
-  |> fst
-
-let eq_array_c arr1 arr2 =
-  Array.fold_left (fun (b, i) v ->
-    b && equal_floats v.Complex.re arr2.(i).Complex.re
-      && equal_floats v.Complex.im arr2.(i).Complex.im, i + 1) (true, 0) arr1
-  |> fst
-
 type ('a, 'b) pt =
   { kind  : ('a, 'b) kind
   ; sum_n : 'a array -> 'a
@@ -92,7 +77,7 @@ let () =
       }
   ; per "complex32"
       { kind  = Complex32
-      ; sum_n = (fun v  -> Array.fold_left Complex.add Complex.zero v)
+      ; sum_n = (fun (v : Complex.t array)  -> Array.fold_left Complex.add Complex.zero v)
       ; sum_fl = (fun v -> [%array1.complex32.fortran fold_left Complex.add Complex.zero v])
       ; sum_fr = (fun v -> [%array1.complex32.fortran fold_right Complex.add Complex.zero v])
       ; sum_cl = (fun v -> [%array1.complex32.c fold_left Complex.add Complex.zero v])
@@ -104,7 +89,7 @@ let () =
       }
   ; per "complex64"
       { kind  = Complex64
-      ; sum_n = (fun v  -> Array.fold_left Complex.add Complex.zero v)
+      ; sum_n = (fun (v : Complex.t array) -> Array.fold_left Complex.add Complex.zero v)
       ; sum_fl = (fun v -> [%array1.complex64.fortran fold_left Complex.add Complex.zero v])
       ; sum_fr = (fun v -> [%array1.complex64.fortran fold_right Complex.add Complex.zero v])
       ; sum_cl = (fun v -> [%array1.complex64.c fold_left Complex.add Complex.zero v])
