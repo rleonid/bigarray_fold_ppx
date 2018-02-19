@@ -3,6 +3,7 @@
 (executables (
   (names (prof
           test
+          test2
           itest
           mtest
           prof2
@@ -17,6 +18,7 @@
   ((name apps)
    (deps (prof.exe
           test.exe
+          test2.exe
           itest.exe
           mtest.exe
           prof2.exe

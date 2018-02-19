@@ -8,11 +8,42 @@ let time s f =
   Printf.printf "%-30s: %f sec\n" s (Sys.time () -. n);
   r
 
+let d = 1e-6
+let significantly_different_from x y = y < (x -. d) || y > (x +. d )
+let equal_floats x y = not (significantly_different_from x y)
+
+let eq_array arr1 arr2 =
+  Array.fold_left (fun (b, i) v ->
+    b && equal_floats v arr2.(i), i + 1) (true, 0) arr1
+  |> fst
+
+let eq_array_c arr1 arr2 =
+  Array.fold_left (fun (b, i) v ->
+    b && equal_floats v.Complex.re arr2.(i).Complex.re
+      && equal_floats v.Complex.im arr2.(i).Complex.im, i + 1) (true, 0) arr1
+  |> fst
+
+
 let generate kind n =
   let gen  = Generators.random kind in
   let native = Array.init n (fun _ -> gen ()) in
   let f = Array1.of_array kind Fortran_layout native in
   let c = Array1.of_array kind C_layout native in
+  native, f, c
+
+let generate2 kind n =
+  let gen  = Generators.random kind in
+  let native = Array.init n (fun _ -> Array.init n (fun _ -> gen ())) in
+  let f = Array2.of_array kind Fortran_layout native in
+  let c = Array2.of_array kind C_layout native in
+  native, f, c
+
+let generate3 kind n =
+  let gen  = Generators.random kind in
+  let ai f = Array.init n f in
+  let native = ai (fun _ -> ai (fun _ -> ai (fun _ -> gen ()))) in
+  let f = Array3.of_array kind Fortran_layout native in
+  let c = Array3.of_array kind C_layout native in
   native, f, c
 
 let gc_between oc s f =
