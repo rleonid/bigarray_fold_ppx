@@ -118,7 +118,7 @@ let to_str s = Location.mkloc s Location.none
 
 let lid s = Location.mkloc (Longident.parse s) Location.none
 
-let ex_id s = Exp.ident (lid s)
+let e s = Exp.ident (lid s)
 
 let unlabeled lst =
   List.map (fun ex -> Nolabel, ex) lst
@@ -126,15 +126,15 @@ let unlabeled lst =
 let make_ref var init exp =
   Exp.let_ Nonrecursive
     [ Vb.mk (Pat.var (to_str var))
-        (Exp.apply (ex_id "ref") (unlabeled [init]))]
+        (Exp.apply (e "ref") (unlabeled [init]))]
     exp
 
 let lookup_ref var =
-  Exp.apply (ex_id "!") (unlabeled [ex_id var])
+  Exp.apply (e "!") (unlabeled [e var])
 
 (* This is an operator! *)
 let assign_ref var val_exp =
-  Exp.apply (ex_id ":=") (unlabeled [ex_id var; val_exp])
+  Exp.apply (e ":=") (unlabeled [e var; val_exp])
 
 let apply f args =
   Exp.apply f (unlabeled args)
@@ -266,7 +266,7 @@ module A1d : Dimension_dependent = struct
    * initialial value or a function as 'i',  this will still compile.
    *)
   let init_ir = "i"
-  let ie_of_ir i1 = ex_id i1
+  let ie_of_ir i1 = e i1
   let ie_to_elist ie = [ie]
 
   let offset ie = function
@@ -280,8 +280,8 @@ module A1d : Dimension_dependent = struct
     [%expr [%e (first layout)] + 1]
 
   let dim ~open_ ~variable =
-    let edim = ex_id (opened ~open_ "dim") in
-    Exp.apply edim (unlabeled [ex_id variable])
+    let edim = e (opened ~open_ "dim") in
+    Exp.apply edim (unlabeled [e variable])
 
   let last ~open_ ~variable layout =
     let d = dim ~open_ ~variable in
@@ -323,7 +323,7 @@ module A2d : Dimension_dependent = struct
   type index_expression = Parsetree.expression * Parsetree.expression
 
   let init_ir = "i", "j"
-  let ie_of_ir (i1, i2) = ex_id i1, ex_id i2
+  let ie_of_ir (i1, i2) = e i1, e i2
   let ie_to_elist (ie1, ie2) = [ie1; ie2]
 
   let offset (ie1, ie2) = function
@@ -344,10 +344,10 @@ module A2d : Dimension_dependent = struct
     | L.C -> s, [%expr [%e s] + 1]
 
   let dim ~open_ ~variable =
-    let edim1 = ex_id (opened ~open_ "dim1") in
-    let e1 = Exp.apply edim1 (unlabeled [ex_id variable]) in
-    let edim2 = ex_id (opened ~open_ "dim2") in
-    let e2 = Exp.apply edim2 (unlabeled [ex_id variable]) in
+    let edim1 = e (opened ~open_ "dim1") in
+    let e1 = Exp.apply edim1 (unlabeled [e variable]) in
+    let edim2 = e (opened ~open_ "dim2") in
+    let e2 = Exp.apply edim2 (unlabeled [e variable]) in
     e1, e2
 
   let last ~open_ ~variable layout =
@@ -409,7 +409,7 @@ module A3d : Dimension_dependent = struct
     Parsetree.expression * Parsetree.expression * Parsetree.expression
 
   let init_ir = "i", "j", "k"
-  let ie_of_ir (i1, i2, i3) = ex_id i1, ex_id i2, ex_id i3
+  let ie_of_ir (i1, i2, i3) = e i1, e i2, e i3
   let ie_to_elist (ie1, ie2, ie3) = [ie1; ie2; ie3]
 
   let offset (ie1, ie2, ie3) = function
@@ -427,12 +427,12 @@ module A3d : Dimension_dependent = struct
     | L.C -> s, s, [%expr [%e s] + 1]
 
   let dim ~open_ ~variable =
-    let edim1 = ex_id (opened ~open_ "dim1") in
-    let e1 = Exp.apply edim1 (unlabeled [ex_id variable]) in
-    let edim2 = ex_id (opened ~open_ "dim2") in
-    let e2 = Exp.apply edim2 (unlabeled [ex_id variable]) in
-    let edim3 = ex_id (opened ~open_ "dim3") in
-    let e3 = Exp.apply edim3 (unlabeled [ex_id variable]) in
+    let edim1 = e (opened ~open_ "dim1") in
+    let e1 = Exp.apply edim1 (unlabeled [e variable]) in
+    let edim2 = e (opened ~open_ "dim2") in
+    let e2 = Exp.apply edim2 (unlabeled [e variable]) in
+    let edim3 = e (opened ~open_ "dim3") in
+    let e3 = Exp.apply edim3 (unlabeled [e variable]) in
     e1, e2, e3
 
   let last ~open_ ~variable layout =
@@ -488,17 +488,17 @@ module Make (D : Dimension_dependent) = struct
   let create ~open_ ~variable ~kind ~layout ~size exp =
     Exp.let_ Nonrecursive
       [ Vb.mk (Pat.var (to_str variable))
-          (Exp.apply (ex_id (D.opened ~open_ "create"))
+          (Exp.apply (e (D.opened ~open_ "create"))
             (unlabeled (kind :: layout :: size)))]
       exp
 
   let get ~open_ arr ~index =
-    Exp.apply (ex_id (D.opened ~open_ "unsafe_get"))
-      (unlabeled (ex_id arr :: D.ie_to_elist index))
+    Exp.apply (e (D.opened ~open_ "unsafe_get"))
+      (unlabeled (e arr :: D.ie_to_elist index))
 
   let set ~open_ arr ~index new_value_ex =
-    Exp.apply (ex_id (D.opened ~open_ "unsafe_set"))
-      (unlabeled (ex_id arr :: (D.ie_to_elist index) @ [new_value_ex]))
+    Exp.apply (e (D.opened ~open_ "unsafe_set"))
+      (unlabeled (e arr :: (D.ie_to_elist index) @ [new_value_ex]))
 
   module Single = struct
 
@@ -639,7 +639,7 @@ module Make (D : Dimension_dependent) = struct
 
       let layout_specific kind op arr layout =
         layout_specific_without_app kind op layout
-          (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
+          (fun name -> Exp.apply (e name) (unlabeled [arr]))
 
       let layout_agnostic kind op arr =
         let name = Operation.to_name op in
@@ -647,18 +647,18 @@ module Make (D : Dimension_dependent) = struct
         (* This variable renaming isn't necessary, it just makes the code, as output
         * -dsource, eaiser to read. *)
         let arg = "b" in
-        let arg_ex = [Nolabel, ex_id arg] in
+        let arg_ex = [Nolabel, e arg] in
         make_let ~arg ~open_ kind name
           (layout_specific_without_app kind op (L.F)
             (fun name_f ->
               layout_specific_without_app kind op (L.C)
                 (fun name_c ->
-                  Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg_ex)
+                  Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg_ex)
                     [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                        (Exp.apply (ex_id name_f) arg_ex)
+                        (Exp.apply (e name_f) arg_ex)
                     ; Exp.case (Pat.construct (lid "C_layout") None)
-                        (Exp.apply (ex_id name_c) arg_ex)])))
-          (Exp.apply (ex_id name) [ Nolabel, arr])
+                        (Exp.apply (e name_c) arg_ex)])))
+          (Exp.apply (e name) [ Nolabel, arr])
 
     end (* Create *)
 
@@ -883,11 +883,11 @@ module Make (D : Dimension_dependent) = struct
             match layout2 with
             | None               ->
                 index_ie
-                , Exp.apply (ex_id (D.opened ~open_ "layout"))
-                    (unlabeled [ex_id arr_arg1])
+                , Exp.apply (e (D.opened ~open_ "layout"))
+                    (unlabeled [e arr_arg1])
             | Some target_layout ->
                 D.offset index_ie (L.to_index_offsets layout target_layout)
-                , ex_id (L.constraint_name target_layout)
+                , e (L.constraint_name target_layout)
           in
           let arg_list =
             if with_index then
@@ -899,13 +899,13 @@ module Make (D : Dimension_dependent) = struct
           set ~open_ arr_arg2 ~index:index2_ie (apply lambda arg_list)
           , tlayout_ex
         in
-        let tkind_ex = ex_id (K.to_string target_kind) in
+        let tkind_ex = e (K.to_string target_kind) in
         let size     = D.(dim ~open_ ~variable:arr_arg1 |> ie_to_elist) in
         create ~open_ ~variable:arr_arg2 ~kind:tkind_ex ~layout:tlayout_ex ~size
           (Exp.sequence
             (D.make_for_loop index ~open_ ~skip_first:false ~upto:true
                layout arr_arg1 inside_ex)
-            (ex_id arr_arg2))
+            (e arr_arg2))
 
     end (* Body *)
 
@@ -1034,18 +1034,18 @@ module Make (D : Dimension_dependent) = struct
         | Operation.Map { config; arr } ->
             layout_specific_without_app_map config "map"
               kind1 kind2 layout1 layout2
-              (fun name -> Exp.apply (ex_id name) (unlabeled [arr]))
+              (fun name -> Exp.apply (e name) (unlabeled [arr]))
         | Operation.Iter { config; arr1; arr2 } ->
             layout_specific_without_app_single ~open_:config.open_ "iter"
               kind1 kind2 layout1 layout2
               (Body.iter config layout1)
-              (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+              (fun name -> Exp.apply (e name) (unlabeled [arr1; arr2]))
         | Operation.Fold { config; left; init; arr1; arr2 } ->
             layout_specific_without_app_single ~open_:config.open_
               (Operation.fold_to_name config.with_index left)
               kind1 kind2 layout1 layout2
               (Body.fold config ~upto:left layout1 init)
-              (fun name -> Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+              (fun name -> Exp.apply (e name) (unlabeled [arr1; arr2]))
 
       let layout_agnostic op kind1 kind2 =
         let name = Operation.to_name op in
@@ -1057,19 +1057,19 @@ module Make (D : Dimension_dependent) = struct
           (* We don't know the target arrays layout, so use the same as the
           * source array. *)
           let arg = "b" in
-          let arg_ex = [Nolabel, ex_id arg] in
+          let arg_ex = [Nolabel, e arg] in
           make_let_single ~arg ~open_ kind1 name ~constraint_kind:kind2
             (lswm kind1 kind2 (L.F) (L.F)
             (fun name_f_f ->
             (lswm kind1 kind2 (L.C) (L.C)
             (fun name_c_c ->
-            Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg_ex)
+            Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg_ex)
                 [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                    (Exp.apply (ex_id name_f_f) arg_ex)
+                    (Exp.apply (e name_f_f) arg_ex)
                 ; Exp.case (Pat.construct (lid "C_layout") None)
-                    (Exp.apply (ex_id name_c_c) arg_ex)
+                    (Exp.apply (e name_c_c) arg_ex)
                 ]))))
-            (Exp.apply (ex_id name) (unlabeled [arr]))
+            (Exp.apply (e name) (unlabeled [arr]))
 
         | Operation.Iter { config; arr1; arr2 } ->
           let lswa k1 k2 l1 l2 =
@@ -1079,8 +1079,8 @@ module Make (D : Dimension_dependent) = struct
           in
           let arg1 = "c" in
           let arg2 = "d" in
-          let arg1_ex = [Nolabel, ex_id arg1] in
-          let arg2_ex = [Nolabel, ex_id arg2] in
+          let arg1_ex = [Nolabel, e arg1] in
+          let arg2_ex = [Nolabel, e arg2] in
           let args_ex = arg1_ex @ arg2_ex in
           make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
             (lswa kind1 kind2 L.F L.F
@@ -1091,21 +1091,21 @@ module Make (D : Dimension_dependent) = struct
             (fun name_c_f ->
             (lswa kind1 kind2 L.C L.C
             (fun name_c_c ->
-              Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg1_ex)
+              Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg1_ex)
                 [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                    (Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg2_ex)
                         [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                            (Exp.apply (ex_id name_f_f) args_ex)
+                            (Exp.apply (e name_f_f) args_ex)
                         ; Exp.case (Pat.construct (lid "C_layout") None)
-                            (Exp.apply (ex_id name_f_c) args_ex)])
+                            (Exp.apply (e name_f_c) args_ex)])
                 ; Exp.case (Pat.construct (lid "C_layout") None)
-                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                    (Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg2_ex)
                         [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                            (Exp.apply (ex_id name_c_f) args_ex)
+                            (Exp.apply (e name_c_f) args_ex)
                         ; Exp.case (Pat.construct (lid "C_layout") None)
-                            (Exp.apply (ex_id name_c_c) args_ex)])
+                            (Exp.apply (e name_c_c) args_ex)])
                 ]))))))))
-            (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+            (Exp.apply (e name) (unlabeled [arr1; arr2]))
 
         | Operation.Fold { config; left; init; arr1; arr2 } ->
           let lswa k1 k2 l1 l2 =
@@ -1116,8 +1116,8 @@ module Make (D : Dimension_dependent) = struct
           in
           let arg1 = "c" in
           let arg2 = "d" in
-          let arg1_ex = [Nolabel, ex_id arg1] in
-          let arg2_ex = [Nolabel, ex_id arg2] in
+          let arg1_ex = [Nolabel, e arg1] in
+          let arg2_ex = [Nolabel, e arg2] in
           let args_ex = arg1_ex @ arg2_ex in
           make_let_double ~arg1 ~arg2 ~open_ kind1 kind2 name
             (lswa kind1 kind2 L.F L.F
@@ -1128,21 +1128,21 @@ module Make (D : Dimension_dependent) = struct
             (fun name_c_f ->
             (lswa kind1 kind2 L.C L.C
             (fun name_c_c ->
-              Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg1_ex)
+              Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg1_ex)
                 [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                    (Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg2_ex)
                         [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                            (Exp.apply (ex_id name_f_f) args_ex)
+                            (Exp.apply (e name_f_f) args_ex)
                         ; Exp.case (Pat.construct (lid "C_layout") None)
-                            (Exp.apply (ex_id name_f_c) args_ex)])
+                            (Exp.apply (e name_f_c) args_ex)])
                 ; Exp.case (Pat.construct (lid "C_layout") None)
-                    (Exp.match_ (Exp.apply (ex_id (D.opened ~open_ "layout")) arg2_ex)
+                    (Exp.match_ (Exp.apply (e (D.opened ~open_ "layout")) arg2_ex)
                         [ Exp.case (Pat.construct (lid "Fortran_layout") None)
-                            (Exp.apply (ex_id name_c_f) args_ex)
+                            (Exp.apply (e name_c_f) args_ex)
                         ; Exp.case (Pat.construct (lid "C_layout") None)
-                            (Exp.apply (ex_id name_c_c) args_ex)])
+                            (Exp.apply (e name_c_c) args_ex)])
                 ]))))))))
-            (Exp.apply (ex_id name) (unlabeled [arr1; arr2]))
+            (Exp.apply (e name) (unlabeled [arr1; arr2]))
 
     end (* Create *)
 
