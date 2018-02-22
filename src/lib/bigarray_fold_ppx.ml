@@ -82,9 +82,11 @@ module L = struct
   * minus one for ending point
   * suffix *)
 
+  let loc = !Ast_helper.default_loc
+
   let start = function
-    | F -> 1
-    | C -> 0
+    | F -> [%expr 1]
+    | C -> [%expr 0]
 
   let minus_one = function
     | F -> false
@@ -137,17 +139,6 @@ let assign_ref var val_exp =
 let apply f args =
   Exp.apply f (unlabeled args)
 
-let const_int n =
-  Pconst_integer (string_of_int n, None)
-
-let plus_one exp =
-  Exp.apply (ex_id "+")
-    (unlabeled [ exp ; Exp.constant (const_int 1) ])
-
-let minus_one exp =
-  Exp.apply (ex_id "-")
-    (unlabeled [ exp ; Exp.constant (const_int 1) ])
-
 let let_unit exp =
   let unit_l = lid "()" in
   Exp.let_ Nonrecursive [ Vb.mk (Pat.construct unit_l None) exp]
@@ -156,8 +147,9 @@ let let_unit exp =
 let constrain_vec t kind layout_s vec_var =
   let t1, t2 = K.to_constraint_types kind in
   let econstr s = Typ.constr (lid s) [] in
-  Pat.constraint_ (Pat.var (to_str vec_var))
+    Pat.constraint_ (Pat.var (to_str vec_var))
     (Typ.constr (lid t) [ econstr t1; econstr t2; econstr layout_s])
+  (*[%pat? ([%p (to_str vec_var)] : [%type: ([%t t1], [%t t2], [%t layout_s]) [%t t]])] *)
 
 let efor i s u e b =
   if u then
@@ -260,6 +252,8 @@ end (* Dimension_dependent *)
 
 module A1d : Dimension_dependent = struct
 
+  let loc = !Ast_helper.default_loc
+
   let opened ~open_ s =
     if open_ then s else "Array1." ^ s
 
@@ -276,15 +270,13 @@ module A1d : Dimension_dependent = struct
 
   let offset ie = function
     | Aligned -> ie
-    | SubOne  -> minus_one ie
-    | AddOne  -> plus_one ie
+    | SubOne  -> [%expr [%e ie] - 1]
+    | AddOne  -> [%expr [%e ie] + 1]
 
-  let first layout =
-    let start = L.start layout in
-    Exp.constant (const_int start)
+  let first = L.start
 
   let second layout =
-    plus_one (first layout)
+    [%expr [%e (first layout)] + 1]
 
   let dim ~open_ ~variable =
     let edim = ex_id (opened ~open_ "dim") in
@@ -293,12 +285,12 @@ module A1d : Dimension_dependent = struct
   let last ~open_ ~variable layout =
     let d = dim ~open_ ~variable in
     if L.minus_one layout then
-      minus_one d
+      [%expr [%e d] - 1]
     else
       d
 
   let penultimate ~open_ ~variable layout =
-    minus_one (last ~open_ ~variable layout)
+    [%expr [%e (last ~open_ ~variable layout)] - 1]
 
   let make_for_loop index ~open_ ~skip_first ~upto layout arr body_exp =
     let iv = Pat.var (to_str index) in
@@ -319,6 +311,8 @@ end (* A1d *)
 
 module A2d : Dimension_dependent = struct
 
+  let loc = !Ast_helper.default_loc
+
   let opened ~open_ s =
     if open_ then s else "Array2." ^ s
 
@@ -331,23 +325,20 @@ module A2d : Dimension_dependent = struct
 
   let offset (ie1, ie2) = function
     | Aligned -> ie1, ie2
-    | SubOne  -> minus_one ie1, minus_one ie2
-    | AddOne  -> plus_one ie1, plus_one ie2
+    | SubOne  -> [%expr [%e ie1] - 1]
+               , [%expr [%e ie2] - 1]
+    | AddOne  -> [%expr [%e ie1] + 1]
+               , [%expr [%e ie2] + 1]
+
 
   let first layout =
-    let start = L.start layout in
-    Exp.constant (const_int start)
-    , Exp.constant (const_int start)
+    L.start layout, L.start layout
 
   let second layout =
-    let start = L.start layout in
+    let s = L.start layout in
     match layout with
-    | L.F ->
-      Exp.constant (const_int (start + 1))
-      , Exp.constant (const_int start)
-    | L.C ->
-      Exp.constant (const_int start)
-      , Exp.constant (const_int (start + 1))
+    | L.F -> [%expr [%e s] + 1], s
+    | L.C -> s, [%expr [%e s] + 1]
 
   let dim ~open_ ~variable =
     let edim1 = ex_id (opened ~open_ "dim1") in
@@ -359,15 +350,15 @@ module A2d : Dimension_dependent = struct
   let last ~open_ ~variable layout =
     let d1, d2 = dim ~open_ ~variable in
     if L.minus_one layout then
-      minus_one d1, minus_one d2
+      [%expr [%e d1] - 1], [%expr [%e d2] - 1]
     else
       d1, d2
 
   let penultimate ~open_ ~variable layout =
     let d1, d2 = last ~open_ ~variable layout in
     match layout with
-    | L.F -> minus_one d1, d2
-    | L.C -> d1, minus_one d2
+    | L.F -> [%expr [%e d1] - 1], d2
+    | L.C -> d1, [%expr [%e d2] - 1]
 
   let make_for_loop (i1, i2) ~open_ ~skip_first ~upto layout arr body_exp =
     let iv1 = Pat.var (to_str i1) in
@@ -405,6 +396,8 @@ end (* A2d *)
 
 module A3d : Dimension_dependent = struct
 
+  let loc = !Ast_helper.default_loc
+
   let opened ~open_ s =
     if open_ then s else "Array3." ^ s
 
@@ -418,26 +411,17 @@ module A3d : Dimension_dependent = struct
 
   let offset (ie1, ie2, ie3) = function
     | Aligned -> ie1, ie2, ie3
-    | SubOne  -> minus_one ie1, minus_one ie2, minus_one ie3
-    | AddOne  -> plus_one ie1, plus_one ie2, plus_one ie3
+    | SubOne  -> [%expr [%e ie1] - 1], [%expr [%e ie2] - 1], [%expr [%e ie3] - 1]
+    | AddOne  -> [%expr [%e ie1] + 1], [%expr [%e ie2] + 1], [%expr [%e ie3] + 1]
 
   let first layout =
-    let start = L.start layout in
-    Exp.constant (const_int start)
-    , Exp.constant (const_int start)
-    , Exp.constant (const_int start)
+    L.start layout, L.start layout, L.start layout
 
   let second layout =
-    let start = L.start layout in
+    let s = L.start layout in
     match layout with
-    | L.F ->
-      Exp.constant (const_int (start + 1))
-      , Exp.constant (const_int start)
-      , Exp.constant (const_int start)
-    | L.C ->
-      Exp.constant (const_int start)
-      , Exp.constant (const_int start)
-      , Exp.constant (const_int (start + 1))
+    | L.F -> [%expr [%e s] + 1], s, s
+    | L.C -> s, s, [%expr [%e s] + 1]
 
   let dim ~open_ ~variable =
     let edim1 = ex_id (opened ~open_ "dim1") in
@@ -451,15 +435,15 @@ module A3d : Dimension_dependent = struct
   let last ~open_ ~variable layout =
     let d1, d2, d3 = dim ~open_ ~variable in
     if L.minus_one layout then
-      minus_one d1, minus_one d2, minus_one d3
+      [%expr [%e d1] - 1], [%expr [%e d2] - 1], [%expr [%e d3] - 1]
     else
       d1, d2, d3
 
   let penultimate ~open_ ~variable layout =
     let d1, d2, d3 = last ~open_ ~variable layout in
     match layout with
-    | L.F -> minus_one d1, d2, d3
-    | L.C -> d1, d2, minus_one d3
+    | L.F -> [%expr [%e d1] - 1], d2, d3
+    | L.C -> d1, d2, [%expr [%e d3] - 1]
 
   let make_for_loop (i1, i2, i3) ~open_ ~skip_first ~upto layout arr body_exp =
     let iv1 = Pat.var (to_str i1) in
