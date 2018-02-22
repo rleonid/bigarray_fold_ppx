@@ -152,10 +152,11 @@ let constrain_vec t kind layout_s vec_var =
   (*[%pat? ([%p (to_str vec_var)] : [%type: ([%t t1], [%t t2], [%t layout_s]) [%t t]])] *)
 
 let efor i s u e b =
+  let loc = !Ast_helper.default_loc in
   if u then
-    Exp.for_ i s e Upto b
+    [%expr for [%p i] = [%e s] to [%e e] do [%e b] done]
   else
-    Exp.for_ i e s Downto b
+    [%expr for [%p i] = [%e e] downto [%e s] do [%e b] done]
 
 module Common_config = struct
 
@@ -292,7 +293,7 @@ module A1d : Dimension_dependent = struct
   let penultimate ~open_ ~variable layout =
     [%expr [%e (last ~open_ ~variable layout)] - 1]
 
-  let make_for_loop index ~open_ ~skip_first ~upto layout arr body_exp =
+  let make_for_loop index ~open_ ~skip_first ~upto layout arr body =
     let iv = Pat.var (to_str index) in
     let first = first layout in
     let last  = last ~open_ ~variable:arr layout in
@@ -301,10 +302,12 @@ module A1d : Dimension_dependent = struct
       let sec = second layout in
       let pen = penultimate ~open_ ~variable:arr layout in
       if upto
-      then efor iv sec true last body_exp
-      else efor iv first false pen body_exp
+      then [%expr for [%p iv] = [%e sec] to [%e last] do [%e body] done]
+      else [%expr for [%p iv] = [%e pen] downto [%e first] do [%e body] done]
     end else begin
-      efor iv first upto last body_exp
+      if upto
+      then [%expr for [%p iv] = [%e first] to [%e last] do [%e body] done]
+      else [%expr for [%p iv] = [%e last] downto [%e first] do [%e body] done]
     end
 
 end (* A1d *)
@@ -360,7 +363,7 @@ module A2d : Dimension_dependent = struct
     | L.F -> [%expr [%e d1] - 1], d2
     | L.C -> d1, [%expr [%e d2] - 1]
 
-  let make_for_loop (i1, i2) ~open_ ~skip_first ~upto layout arr body_exp =
+  let make_for_loop (i1, i2) ~open_ ~skip_first ~upto layout arr body =
     let iv1 = Pat.var (to_str i1) in
     let iv2 = Pat.var (to_str i2) in
     let f1, f2 = first layout in
@@ -372,24 +375,24 @@ module A2d : Dimension_dependent = struct
       match upto, layout with
       | true, L.F ->
           Exp.let_ Nonrecursive [ Vb.mk iv2 f2] (Exp.sequence
-            (efor iv1 s1 true l1 body_exp)
-            (efor iv2 s2 true l2 (efor iv1 f1 true l1 body_exp)))
+            (efor iv1 s1 true l1 body)
+            (efor iv2 s2 true l2 (efor iv1 f1 true l1 body)))
       | true, L.C ->
           Exp.let_ Nonrecursive [ Vb.mk iv1 f1] (Exp.sequence
-            (efor iv2 s2 true l2 body_exp)
-            (efor iv1 s1 true l1 (efor iv2 f2 true l2 body_exp)))
+            (efor iv2 s2 true l2 body)
+            (efor iv1 s1 true l1 (efor iv2 f2 true l2 body)))
       | false, L.F ->
           Exp.let_ Nonrecursive [ Vb.mk iv2 l2] (Exp.sequence
-            (efor iv1 f1 false p1 body_exp)
-            (efor iv2 f2 false p2 (efor iv1 f1 false l1 body_exp)))
+            (efor iv1 f1 false p1 body)
+            (efor iv2 f2 false p2 (efor iv1 f1 false l1 body)))
       | false, L.C ->
           Exp.let_ Nonrecursive [ Vb.mk iv1 l1] (Exp.sequence
-            (efor iv2 f2 false p2 body_exp)
-            (efor iv1 f1 false p1 (efor iv2 f2 false l2 body_exp)))
+            (efor iv2 f2 false p2 body)
+            (efor iv1 f1 false p1 (efor iv2 f2 false l2 body)))
     end else begin
       match layout with
-      | L.F -> efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body_exp)
-      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 body_exp)
+      | L.F -> efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body)
+      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 body)
     end
 
 end (* A2d *)
@@ -445,7 +448,7 @@ module A3d : Dimension_dependent = struct
     | L.F -> [%expr [%e d1] - 1], d2, d3
     | L.C -> d1, d2, [%expr [%e d3] - 1]
 
-  let make_for_loop (i1, i2, i3) ~open_ ~skip_first ~upto layout arr body_exp =
+  let make_for_loop (i1, i2, i3) ~open_ ~skip_first ~upto layout arr body =
     let iv1 = Pat.var (to_str i1) in
     let iv2 = Pat.var (to_str i2) in
     let iv3 = Pat.var (to_str i3) in
@@ -458,24 +461,24 @@ module A3d : Dimension_dependent = struct
       match upto, layout with
       | true, L.F ->
           Exp.let_ Nonrecursive [ Vb.mk iv3 f3] (Exp.sequence
-            (efor iv2 s2 true l2 (efor iv1 s1 true l1 body_exp))
-            (efor iv3 s3 true l3 (efor iv2 f2 true l2 (efor iv1 f1 true l1 body_exp))))
+            (efor iv2 s2 true l2 (efor iv1 s1 true l1 body))
+            (efor iv3 s3 true l3 (efor iv2 f2 true l2 (efor iv1 f1 true l1 body))))
       | true, L.C ->
           Exp.let_ Nonrecursive [ Vb.mk iv1 f1] (Exp.sequence
-            (efor iv2 s2 true l2 (efor iv3 s3 true l3 body_exp))
-            (efor iv1 s1 true l1 (efor iv2 f2 true l2 (efor iv3 s3 true l3 body_exp))))
+            (efor iv2 s2 true l2 (efor iv3 s3 true l3 body))
+            (efor iv1 s1 true l1 (efor iv2 f2 true l2 (efor iv3 s3 true l3 body))))
       | false, L.F ->
           Exp.let_ Nonrecursive [ Vb.mk iv3 l3] (Exp.sequence
-            (efor iv2 f2 false p2 (efor iv1 f1 false p1 body_exp))
-            (efor iv3 f3 false p3 (efor iv2 f2 false p2 (efor iv1 f1 false p1 body_exp))))
+            (efor iv2 f2 false p2 (efor iv1 f1 false p1 body))
+            (efor iv3 f3 false p3 (efor iv2 f2 false p2 (efor iv1 f1 false p1 body))))
       | false, L.C ->
           Exp.let_ Nonrecursive [ Vb.mk iv1 l1] (Exp.sequence
-              (efor iv2 f2 false p2 (efor iv3 f3 false p3 body_exp))
-              (efor iv1 f1 false p1 (efor iv2 f2 false p2 (efor iv3 f3 false p3 body_exp))))
+              (efor iv2 f2 false p2 (efor iv3 f3 false p3 body))
+              (efor iv1 f1 false p1 (efor iv2 f2 false p2 (efor iv3 f3 false p3 body))))
     end else begin
       match layout with
-      | L.F -> efor iv3 f3 upto l3 (efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body_exp))
-      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 (efor iv3 f3 upto l3 body_exp))
+      | L.F -> efor iv3 f3 upto l3 (efor iv2 f2 upto l2 (efor iv1 f1 upto l1 body))
+      | L.C -> efor iv1 f1 upto l1 (efor iv2 f2 upto l2 (efor iv3 f3 upto l3 body))
     end
 
 end (* A3d *)
